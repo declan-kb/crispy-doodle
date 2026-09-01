@@ -542,6 +542,21 @@
     return state.reports.find(r => r.id === team);
   }
 
+  // Renders a team's scout-status badge from its report (or lack of one).
+  // A real three-way check, not a fallback — a report existing with a
+  // blank/unrecognized status is NOT the same as "Scouted at event", so
+  // this shows the status as-written for anything that isn't exactly one
+  // of the two known values (e.g. legacy data, or a hand-edited import
+  // that typed "Scouted" instead of the exact pill text) rather than
+  // silently mislabeling it. Shared by renderTable() and renderRankTable()
+  // so the two tabs can't drift out of sync on this again.
+  function statusTagHtml(rep){
+    if(!rep || !rep.status) return `<span class="tag" style="opacity:0.55;">Not scouted</span>`;
+    if(rep.status === 'Pre-scouted') return `<span class="tag prescouted">Pre-scouted</span>`;
+    if(rep.status === 'Scouted at event') return `<span class="tag scouted-tag">Scouted at event</span>`;
+    return `<span class="tag">${esc(rep.status)}</span>`;
+  }
+
   // Every team the app knows about: the loaded team list, plus any team
   // that already has a scouting report but has since been removed from
   // the list — so removing a team in Settings never hides or loses data
@@ -696,7 +711,7 @@
     if(state.statusFilter !== "All"){
       rows = rows.filter(t => {
         const rep = reportForTeam(t.team);
-        const status = rep ? rep.status : "Not scouted";
+        const status = (rep && rep.status) ? rep.status : "Not scouted";
         return status === state.statusFilter;
       });
     }
@@ -782,7 +797,11 @@
   // Column matching is by header text, not position, and unrecognized
   // extra columns are ignored — so a CSV only needs a "Team #" column and
   // whichever others it has; missing ones are just left blank/"Unknown"
-  // the same way a fresh report would be.
+  // the same way a fresh report would be. A row with nothing but a team
+  // number/name is skipped entirely rather than written as an empty
+  // report — Export CSV includes every team on the roster (not just
+  // scouted ones), so re-importing it unedited must not flip every
+  // not-yet-scouted team to "scouted".
   async function importScoutingCSV(file){
     if(!isConfigured){
       state.importStatus = {type:"err", text: "Firebase isn't configured yet — see the banner above."};
@@ -806,26 +825,59 @@
       }
 
       const get = (r, key) => colIndex[key] !== undefined ? (r[colIndex[key]] || "").trim() : "";
-      let imported = 0, skipped = 0;
+      let imported = 0, skipped = 0, blank = 0;
       const newTeams = [];
       for(const r of rows.slice(1)){
         const team = get(r, 'teamNumber');
         if(!/^\d{1,6}$/.test(team)){ skipped++; continue; }
+
+        const teamName = get(r, 'teamName');
+        const rawScoutName = get(r, 'scoutName');
+        const rawStatus = get(r, 'status');
+        const rawImpressions = get(r, 'impressions');
+        const rawDrivebase = get(r, 'drivebase');
+        const rawDrivebaseNotes = get(r, 'drivebaseNotes');
+        const rawGroundIntake = get(r, 'groundIntake');
+        const rawShooterType = get(r, 'shooterType');
+        const rawShooterNotes = get(r, 'shooterNotes');
+        const rawAutoType = get(r, 'autoType');
+        const rawCrossBump = get(r, 'crossBump');
+        const rawCrossTrench = get(r, 'crossTrench');
+        const rawClimbLevel = get(r, 'climbLevel');
+
+        // A row with nothing but a team number/name isn't a report to
+        // import — it's just a not-yet-scouted team, most likely carried
+        // over because Export CSV lists every team on the roster, not
+        // just scouted ones (exactly what re-importing your own export
+        // unedited would produce). Writing an empty report for it would
+        // wrongly flip the team to "scouted" — skip it, but still track
+        // the name for the team-list merge below.
+        const hasScoutingData = rawScoutName || rawStatus || rawImpressions || rawDrivebase ||
+          rawDrivebaseNotes || rawGroundIntake || rawShooterType || rawShooterNotes ||
+          rawAutoType || rawCrossBump || rawCrossTrench || rawClimbLevel;
+        if(!hasScoutingData){
+          blank++;
+          if(teamName && !state.teamList.teams.some(t => t.team === team)){
+            newTeams.push({ team, teamName, qualRank: null });
+          }
+          continue;
+        }
+
         const report = {
           teamNumber: team,
-          teamName: get(r, 'teamName'),
-          scoutName: get(r, 'scoutName'),
-          status: get(r, 'status'),
-          impressions: get(r, 'impressions'),
-          drivebase: get(r, 'drivebase'),
-          drivebaseNotes: get(r, 'drivebaseNotes'),
-          groundIntake: get(r, 'groundIntake'),
-          shooterType: get(r, 'shooterType'),
-          shooterNotes: get(r, 'shooterNotes'),
-          autoType: get(r, 'autoType') || "Unknown",
-          crossBump: get(r, 'crossBump') || "Unknown",
-          crossTrench: get(r, 'crossTrench') || "Unknown",
-          climbLevel: get(r, 'climbLevel') || "Unknown",
+          teamName: teamName,
+          scoutName: rawScoutName,
+          status: rawStatus,
+          impressions: rawImpressions,
+          drivebase: rawDrivebase,
+          drivebaseNotes: rawDrivebaseNotes,
+          groundIntake: rawGroundIntake,
+          shooterType: rawShooterType,
+          shooterNotes: rawShooterNotes,
+          autoType: rawAutoType || "Unknown",
+          crossBump: rawCrossBump || "Unknown",
+          crossTrench: rawCrossTrench || "Unknown",
+          climbLevel: rawClimbLevel || "Unknown",
           timestamp: get(r, 'timestamp') || new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -845,7 +897,9 @@
       state.importStatus = {
         type: "ok",
         text: `Imported ${imported} report${imported===1?'':'s'}` +
-          (skipped ? `, skipped ${skipped} row${skipped===1?'':'s'} without a valid team number.` : '.') +
+          (blank ? `, left ${blank} team${blank===1?'':'s'} with no scouting data alone` : '') +
+          (skipped ? `, skipped ${skipped} row${skipped===1?'':'s'} without a valid team number` : '') +
+          `.` +
           (newTeams.length ? ` Added ${newTeams.length} new team${newTeams.length===1?'':'s'} to the team list.` : '')
       };
     }catch(e){
@@ -1243,11 +1297,7 @@
     const head = `<th>Status</th>` + cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th>Notes</th>`;
     const body = rows.map(t=>{
       const rep = reportForTeam(t.team);
-      const statusCell = !rep
-        ? `<span class="tag" style="opacity:0.55;">Not scouted</span>`
-        : rep.status === 'Pre-scouted'
-          ? `<span class="tag prescouted">Pre-scouted</span>`
-          : `<span class="tag scouted-tag">Scouted at event</span>`;
+      const statusCell = statusTagHtml(rep);
       const cells = cols.map((c,i) => {
         const cls = i===0 ? 'team-cell' : (i===1 ? '' : 'dim');
         const val = c[0]==='teamNumber' ? t.team : c[0]==='teamName' ? ((rep && rep.teamName) || t.teamName) : (rep ? rep[c[0]] : '');
@@ -1410,11 +1460,7 @@
       const isDNP = !!state.teamList.doNotPick[t.team];
       const name = (rep && rep.teamName) || t.teamName || "—";
       const notes = rep ? rep.impressions : "";
-      const scoutedCell = !rep
-        ? `<span class="tag" style="opacity:0.55;">Not scouted</span>`
-        : rep.status === 'Pre-scouted'
-          ? `<span class="tag prescouted">Pre-scouted</span>`
-          : `<span class="tag scouted-tag">Scouted at event</span>`;
+      const scoutedCell = statusTagHtml(rep);
       return `
         <tr class="${isDNP?'dnp-row':''}">
           <td class="dnp-actions">
