@@ -243,6 +243,9 @@
     border:1px solid var(--border-light); padding:3px 9px; border-radius:20px;
   }
   .tag.prescouted{ color:var(--accent2); border-color:var(--accent2); background:rgba(241,90,36,0.1); }
+  .tag.epa-tag{ color:var(--steel); border-color:var(--steel); background:rgba(47,156,152,0.1); }
+  .epa-loading{ opacity:0.5; }
+  .epa-pct{ color:var(--text-faint); font-size:0.9em; }
   .row-meta{ font-size:12px; color:var(--text-faint); margin-top:6px; }
   .expand-arrow{ color:var(--text-faint); font-size:13px; transition: transform .15s; }
   .report-row.open .expand-arrow{ transform: rotate(90deg); }
@@ -350,7 +353,7 @@
   // write-in box to appear next to it (see resolvedValue() below).
   // ============================================================
   const DRIVEBASE_OPTS = ["Swerve","Kit of Parts (KOP)","Other"];
-  const GROUND_INTAKE_OPTS = ["Under-bumper","Over-bumper","No intake","Other"];
+  const GROUND_INTAKE_OPTS = ["Over-bumper","Cut bumper","No intake","Other"];
   const SHOOTER_OPTS = ["Turreted","Adjustable hood","Fixed angle","No shooter","Other"];
   const AUTO_OPTS = ["Nothing","Score preload","Score preload + climb L1","Multiple cycles","Other"];
   const YESNO_OPTS = ["Yes","No","Unknown"];
@@ -373,6 +376,37 @@
     ["impressions","Scout Impressions"],
     ["timestamp","Submitted"], ["updatedAt","Last Updated"]
   ];
+
+  // ====================== STATBOTICS EPA LOOKUP ======================
+  // Pulls each team's EPA (a competitive-strength rating) from Statbotics'
+  // free public API, purely for reference in the Scouting Data tab — it's
+  // never saved on the report itself, since EPA shifts as the season goes.
+  // epaCache lives outside `state` since it's a side-channel lookup, not
+  // form/report data; keyed by team number, e.g.
+  //   { "254": {status:"ok", epa:51.7, percentile:0.997} }
+  const EPA_YEAR = 2026;
+  let epaCache = {};
+
+  // Kicks off a fetch for a team's EPA if one isn't already in flight or
+  // cached, then re-renders once it resolves. Safe to call on every render
+  // (renderTable/renderRow do, for whatever teams are on screen) — it's a
+  // no-op once a team's entry exists in epaCache, loading or not.
+  function ensureEPA(teamNumber){
+    const team = (teamNumber||"").trim();
+    if(!team || epaCache[team]) return;
+    epaCache[team] = { status: "loading" };
+    fetch(`https://api.statbotics.io/v3/team_year/${encodeURIComponent(team)}/${EPA_YEAR}`)
+      .then(res => { if(!res.ok) throw new Error("not found"); return res.json(); })
+      .then(data => {
+        epaCache[team] = {
+          status: "ok",
+          epa: data && data.epa ? data.epa.total_points : null,
+          percentile: data && data.epa && data.epa.ranks ? data.epa.ranks.total.percentile : null
+        };
+        render();
+      })
+      .catch(()=>{ epaCache[team] = { status: "error" }; render(); });
+  }
 
   // ====================== APP STATE ======================
   // Everything the UI depends on lives in this one object. There's no
@@ -798,6 +832,7 @@
           <button data-view="table" class="${state.dataView==='table'?'active':''}">Table</button>
           <button data-view="cards" class="${state.dataView==='cards'?'active':''}">Cards</button>
         </div>
+        <button class="btn-secondary" id="refresh-epa-btn" title="Re-fetch EPA from Statbotics for every team">Refresh EPA</button>
         <button class="btn-export" id="export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
       </div>
       <div class="count-strip">Showing <b>${rows.length}</b> of <b>${state.reports.length}</b> report${state.reports.length===1?'':'s'}</div>
@@ -815,7 +850,7 @@
       ["groundIntake","Intake"], ["shooterType","Shooter"], ["autoType","Auto"],
       ["crossBump","Bump"], ["crossTrench","Trench"], ["climbLevel","Climb"], ["scoutName","Scout"]
     ];
-    const head = `<th style="text-align:center;" title="Pre-scouted">PS</th>` + cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th>Notes</th>`;
+    const head = `<th style="text-align:center;" title="Pre-scouted">PS</th>` + cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th title="Statbotics ${EPA_YEAR} EPA">EPA</th><th>Notes</th>`;
     const body = rows.map(r=>{
       const preScoutCell = r.preScouting==='Yes'
         ? `<td class="prescout-cell" title="Pre-scouted"><span class="prescout-dot"></span></td>`
@@ -825,9 +860,20 @@
         return `<td class="${cls}">${esc(r[c[0]]||'—')}</td>`;
       }).join("");
       const notes = r.impressions || [r.strengths, r.weaknesses].filter(Boolean).join(" · ");
-      return `<tr>${preScoutCell}${cells}<td class="notes-cell">${esc(notes || '—')}</td></tr>`;
+      return `<tr>${preScoutCell}${cells}<td class="dim">${epaCellHtml(r.teamNumber)}</td><td class="notes-cell">${esc(notes || '—')}</td></tr>`;
     }).join("");
     return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  // Renders one team's EPA lookup as a table cell / inline string, kicking
+  // off the fetch (via ensureEPA) as a side effect if it hasn't run yet.
+  function epaCellHtml(teamNumber){
+    ensureEPA(teamNumber);
+    const entry = epaCache[(teamNumber||"").trim()];
+    if(!entry || entry.status === "loading") return `<span class="epa-loading">…</span>`;
+    if(entry.status === "error" || entry.epa==null) return "—";
+    const pct = entry.percentile!=null ? ` <span class="epa-pct">(${Math.round(entry.percentile*100)}%ile)</span>` : "";
+    return `${entry.epa.toFixed(1)}${pct}`;
   }
 
   // Card view (alternate) — one collapsed summary row per report; clicking
@@ -846,6 +892,7 @@
           <span class="team-badge">${esc(r.teamNumber)}</span>
           <span class="team-name">${esc(r.teamName || 'Unnamed team')}</span>
           <div class="row-tags">
+            <span class="tag epa-tag" title="Statbotics ${EPA_YEAR} EPA">EPA ${epaCellHtml(r.teamNumber)}</span>
             ${r.preScouting==='Yes' ? `<span class="tag prescouted">Pre-scouted</span>` : ''}
             <span class="tag">${esc(r.drivebase||'—')}</span>
             <span class="tag">Climb: ${esc(r.climbLevel||'—')}</span>
@@ -934,6 +981,8 @@
       if(preScoutingFilterEl) preScoutingFilterEl.onchange = ()=>{ state.preScoutingFilter = preScoutingFilterEl.value; render(); };
       const exportBtn = document.getElementById('export-btn');
       if(exportBtn) exportBtn.onclick = exportCSV;
+      const refreshEpaBtn = document.getElementById('refresh-epa-btn');
+      if(refreshEpaBtn) refreshEpaBtn.onclick = ()=>{ epaCache = {}; render(); };
       document.querySelectorAll('.view-toggle button').forEach(el=>{
         el.onclick = ()=>{ state.dataView = el.dataset.view; render(); };
       });
