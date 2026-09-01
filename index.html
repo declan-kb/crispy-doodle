@@ -1,64 +1,30 @@
 <!DOCTYPE html>
-<!--
-  PIT SCOUT — REBUILT 2026
-  ========================
-  Single-file pit scouting app for FRC's 2026 game, REBUILT.
-  No build step — just edit this file directly and push.
-
-  Structure of this file:
-    1. <style>   — all CSS, using variables in :root for the color palette.
-    2. <body>    — just an empty #app div; everything is rendered into it by JS.
-    3. <script>  — Firebase setup, then app logic, organized top to bottom as:
-                     - firebaseConfig + connection setup
-                     - dropdown option lists (EDIT THESE to change form choices)
-                     - app state
-                     - Firestore read/write functions
-                     - CSV export
-                     - render functions (build HTML strings from state)
-                     - attachHandlers (wires up clicks/inputs after each render)
-                     - startup calls at the very bottom
-
-  How rendering works: this isn't React. `render()` rebuilds the entire
-  #app innerHTML from `state` every time something changes, then
-  `attachHandlers()` re-attaches event listeners to the new DOM elements.
-  If you add a new interactive element, remember to wire it up in
-  attachHandlers() too, or clicks on it won't do anything.
--->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pit Scout — REBUILT 2026</title>
-<link rel="icon" type="image/png" href="Circular Logo.png">
 <style>
-  /* Google Fonts: Barlow Condensed for headings/labels, Inter for body text */
   @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-  /* ---------- Color palette ----------
-     Change these to re-theme the whole app — everything below references
-     these variables rather than hardcoded colors. */
   :root{
-    /* Palette pulled straight from the team logo (Circular Logo.png):
-       navy ring, teal gear, gold badge, orange bow-tie */
-    --bg: #171d26;
-    --panel: #1e2530;
-    --panel-alt: #252d3a;
-    --panel-raised: #2c3543;
-    --accent: #f6c518;
-    --accent-deep: #c99400;
-    --accent-text: #1c1400;
-    --accent2: #f0501f;
-    --steel: #2f9c98;
+    --bg: #16171a;
+    --panel: #1e2023;
+    --panel-alt: #24262a;
+    --panel-raised: #2a2c31;
+    --accent: #f4b400;
+    --accent-deep: #b98600;
+    --accent-text: #191300;
+    --steel: #5b87a0;
     --text: #ecedec;
-    --text-dim: #93a0a6;
-    --text-faint: #626e78;
-    --border: #2b3442;
-    --border-light: #37414f;
+    --text-dim: #93969b;
+    --text-faint: #64666b;
+    --border: #313337;
+    --border-light: #3c3e43;
     --ok: #4caf7d;
     --warn: #d9645c;
   }
 
-  /* ---------- Base elements (inputs, buttons, focus states) ---------- */
   *{ box-sizing: border-box; }
   html,body{ margin:0; padding:0; background:var(--bg); color:var(--text);
     font-family:'Inter',system-ui,sans-serif; }
@@ -96,8 +62,7 @@
     padding: 18px 24px 0 24px;
   }
   .topbar-inner{ max-width: 980px; margin:0 auto; }
-  .brand{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  .brand-logo{ width:44px; height:44px; display:block; }
+  .brand{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
   .brand-mark{
     font-family:'Barlow Condensed', sans-serif; font-weight:700; font-size:30px;
     letter-spacing:0.5px; color:var(--text); line-height:1;
@@ -127,8 +92,9 @@
   .section-card.identity{ border-left-color: var(--accent); }
   .section-title{
     font-family:'Barlow Condensed', sans-serif; font-weight:600; font-size:19px;
-    margin: 0 0 14px 0; color: var(--text);
+    margin: 0 0 3px 0; color: var(--text);
   }
+  .section-hint{ font-size:12.5px; color:var(--text-faint); margin: 0 0 14px 0; }
   .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
   .grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px; }
   .field{ margin-bottom:14px; }
@@ -148,17 +114,6 @@
 
   .other-input{ margin-top:8px; }
 
-  .checkbox-row{ display:flex; align-items:center; gap:8px; }
-  .checkbox-row input[type="checkbox"]{ width:16px; height:16px; accent-color:var(--accent); }
-  .checkbox-row label{ margin:0; cursor:pointer; }
-
-  .edit-banner{
-    display:flex; align-items:center; gap:12px; justify-content:space-between;
-    background:#20242a; border:1px solid var(--steel); border-radius:4px;
-    padding:10px 16px; margin-bottom:18px; font-size:13.5px; color:var(--text-dim);
-  }
-  .edit-banner b{ color:var(--text); }
-
   .submit-row{ display:flex; align-items:center; gap:14px; margin-top:6px; }
   .btn-primary{
     background:var(--accent); color:var(--accent-text); font-weight:700; font-size:15px;
@@ -175,7 +130,7 @@
   .status-msg.ok{ color:var(--ok); }
   .status-msg.err{ color:var(--warn); }
 
-  /* ---------- Data view: toolbar (search, filter, view toggle, export) ---------- */
+  /* ---------- Data view ---------- */
   .data-toolbar{
     display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap;
   }
@@ -192,7 +147,6 @@
   .count-strip{ font-size:13px; color:var(--text-faint); margin-bottom:14px; }
   .count-strip b{ color:var(--text); }
 
-  /* Table / Cards toggle button pair, top-right of the data toolbar */
   .view-toggle{ display:flex; gap:2px; background:var(--panel-alt); border:1px solid var(--border-light); border-radius:4px; padding:2px; }
   .view-toggle button{
     background:transparent; color:var(--text-dim); font-size:13px; font-weight:600;
@@ -201,7 +155,6 @@
   .view-toggle button.active{ background:var(--panel-raised); color:var(--text); }
   .view-toggle button:hover:not(.active){ color:var(--text); }
 
-  /* Data view: summary table (default view) — see renderTable() in the script */
   .table-scroll{ overflow-x:auto; border:1px solid var(--border); border-radius:4px; }
   .summary-table{ width:100%; border-collapse:collapse; font-size:13px; white-space:nowrap; }
   .summary-table th{
@@ -217,14 +170,7 @@
   .summary-table td.team-cell{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; color:var(--accent); }
   .summary-table td.dim{ color:var(--text-dim); }
   .summary-table td.notes-cell{ white-space:normal; min-width:220px; color:var(--text-dim); font-size:12.5px; }
-  .summary-table td.prescout-cell{ text-align:center; }
-  .prescout-dot{
-    display:inline-block; width:9px; height:9px; border-radius:50%;
-    background:var(--accent2);
-  }
 
-  /* Data view: expandable cards (alternate view) — see renderRow() in the script.
-     Each .report-row toggles an .open class on click, which reveals .report-detail. */
   .report-list{ display:flex; flex-direction:column; gap:10px; }
   .report-row{
     background:var(--panel); border:1px solid var(--border); border-radius:4px;
@@ -242,7 +188,6 @@
     font-size:11.5px; color:var(--text-dim); background:var(--panel-alt);
     border:1px solid var(--border-light); padding:3px 9px; border-radius:20px;
   }
-  .tag.prescouted{ color:var(--accent2); border-color:var(--accent2); background:rgba(241,90,36,0.1); }
   .row-meta{ font-size:12px; color:var(--text-faint); margin-top:6px; }
   .expand-arrow{ color:var(--text-faint); font-size:13px; transition: transform .15s; }
   .report-row.open .expand-arrow{ transform: rotate(90deg); }
@@ -255,14 +200,8 @@
   .detail-item dd{ margin:0; font-size:13.5px; color:var(--text); line-height:1.45; }
   .detail-item{ margin-bottom:8px; }
   .detail-full{ grid-column: 1 / -1; }
-  .detail-actions{ display:flex; gap:10px; margin-top:14px; }
-  .edit-btn{
-    background:transparent; color:var(--text-dim); border:1px solid var(--border-light);
-    font-size:12.5px; font-weight:600; padding:7px 12px; border-radius:4px;
-  }
-  .edit-btn:hover{ color:var(--text); border-color:var(--text-dim); }
   .delete-btn{
-    background:transparent; color:var(--warn); border:1px solid #4a2b29;
+    margin-top:14px; background:transparent; color:var(--warn); border:1px solid #4a2b29;
     font-size:12.5px; font-weight:600; padding:7px 12px; border-radius:4px;
   }
   .delete-btn:hover{ background:rgba(217,100,92,0.1); }
@@ -323,14 +262,8 @@
     appId: "1:213708242808:web:a79ad6ab4b9af46085928d"
   };
 
-  // isConfigured stays false until real keys are pasted in above — that's what
-  // triggers the "Firebase not configured yet" banner instead of a save error.
   const isConfigured = firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith("YOUR_");
 
-  // db  = the Firestore database handle, used everywhere below to read/write.
-  // fb  = the imported firebase-firestore module itself, so we can call things
-  //       like fb.collection(...), fb.addDoc(...), fb.deleteDoc(...) without
-  //       re-importing. Both stay null if Firebase isn't configured.
   let db = null, fb = null;
   if (isConfigured) {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js");
@@ -342,91 +275,58 @@
     document.getElementById('setup-banner').style.display = 'block';
   }
 
-  // ====================== FORM OPTIONS ======================
-  // These arrays drive every pill-button group in the "New Report" form
-  // (see pillGroup() below) AND the CSV/table columns' possible values.
-  // To add/remove/rename a choice, just edit the array — no other code
-  // needs to change. Keep "Other" in a list only if you want a free-text
-  // write-in box to appear next to it (see resolvedValue() below).
-  // ============================================================
   const DRIVEBASE_OPTS = ["Swerve","Kit of Parts (KOP)","Other"];
   const GROUND_INTAKE_OPTS = ["Under-bumper","Over-bumper","No intake","Other"];
   const SHOOTER_OPTS = ["Turreted","Adjustable hood","Fixed angle","No shooter","Other"];
-  const AUTO_OPTS = ["Nothing","Score preload","Score preload + climb L1","Multiple cycles","Other"];
+  const AUTO_OPTS = ["Nothing","Score preload","Score preload + climb L1","Multiple cycles"];
   const YESNO_OPTS = ["Yes","No","Unknown"];
   const CLIMB_LEVEL_OPTS = ["None","Level 1","Level 2","Level 3","Unknown"];
 
-  // FIELDS_META lists every field that gets saved, in [key, displayLabel] pairs.
-  // It's the single source of truth for CSV export column order/labels
-  // (see exportCSV() below) AND how form fields map onto the report object.
-  // If you add a brand-new field to the form, add it here too or it won't
-  // show up in the CSV export.
   const FIELDS_META = [
     ["teamNumber","Team #"], ["teamName","Team Name"], ["scoutName","Scout"],
-    ["eventNotes","Event / Context"], ["preScouting","Pre-scouting"],
+    ["eventNotes","Event / Context"],
     ["drivebase","Drivebase"], ["drivebaseNotes","Drivebase Notes"],
     ["groundIntake","Ground Intake"],
     ["shooterType","Shooter Type"], ["shooterNotes","Shooter Notes"],
     ["autoType","Auto Routine"],
     ["crossBump","Can Cross Bump"], ["crossTrench","Can Cross Trench"],
     ["climbLevel","Best Climb Level"],
-    ["impressions","Scout Impressions"],
-    ["timestamp","Submitted"], ["updatedAt","Last Updated"]
+    ["strengths","Strengths"], ["weaknesses","Weaknesses / Concerns"],
+    ["timestamp","Submitted"]
   ];
 
-  // ====================== APP STATE ======================
-  // Everything the UI depends on lives in this one object. There's no
-  // framework here — render() reads from `state` to build HTML, and event
-  // handlers mutate `state` then call render() again. See the big comment
-  // at the top of the file for how this loop works.
   let state = {
-    tab: "submit",           // "submit" | "data" — which top-level tab is showing
-    reports: [],             // all reports, kept in sync with Firestore by startListening()
-    loaded: false,           // true once the first Firestore snapshot (or a no-config fallback) has arrived
-    loadError: null,         // set if the Firestore listener fails (see startListening)
-    saving: false,           // true while a submit is in flight, disables the Save button
-    saveMsg: null,           // {type: "ok"|"err", text} shown under the Save button
-    search: "",              // Scouting Data tab: free-text search box value
-    drivebaseFilter: "All",  // Scouting Data tab: drivebase dropdown value
-    preScoutingFilter: "All", // Scouting Data tab: pre-scouted dropdown value ("All" | "Yes" | "No")
-    dataView: "table",       // "table" | "cards" — which layout the Scouting Data tab uses
-    openRowId: null,         // id of the currently expanded report in Cards view
-    form: freshForm(),       // current values of the New Report form
-    editId: null,            // Firestore doc id of the report being edited, or null when submitting a new one
-    editTimestamp: null      // original `timestamp` of the report being edited, preserved across the update
+    tab: "submit",
+    reports: [],
+    loaded: false,
+    loadError: null,
+    saving: false,
+    saveMsg: null,
+    search: "",
+    drivebaseFilter: "All",
+    dataView: "table",
+    openRowId: null,
+    form: freshForm()
   };
 
-  // Blank slate for the New Report form — called on load and after a
-  // successful submit. Keep this in sync with the fields referenced in
-  // handleSubmit() and renderSubmit().
   function freshForm(){
     return {
-      teamNumber:"", teamName:"", scoutName:"", eventNotes:"", preScouting:false,
+      teamNumber:"", teamName:"", scoutName:"", eventNotes:"",
       drivebase:"", drivebaseOther:"", drivebaseNotes:"",
       groundIntake:"", groundIntakeOther:"",
       shooterType:"", shooterOther:"", shooterNotes:"",
-      autoType:"", autoTypeOther:"",
+      autoType:"",
       crossBump:"", crossTrench:"",
       climbLevel:"",
-      impressions:""
+      strengths:"", weaknesses:""
     };
   }
 
-  // Escapes text before it's dropped into an HTML template string, so a
-  // scout typing "<script>" or a stray quote in the notes field can't
-  // break the page. Always wrap user-entered text in esc(...) inside the
-  // render*() functions below.
   function esc(s){
     return String(s===undefined||s===null?"":s)
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
-  // ====================== FIRESTORE SYNC ======================
-  // Sets up a live listener on the 'pit-reports' collection. Firestore
-  // pushes updates to onSnapshot's callback whenever ANY connected device
-  // adds/edits/deletes a report — that's what makes the "Scouting Data"
-  // tab update in real time across everyone's phones without refreshing.
-  // Called once at the very bottom of this script.
   function startListening(){
     if(!isConfigured){
       state.loaded = true;
@@ -439,8 +339,6 @@
       snapshot.forEach(docSnap=>{
         rows.push(Object.assign({ id: docSnap.id }, docSnap.data()));
       });
-      // Newest first. Sorted client-side (rather than via Firestore's
-      // orderBy) to avoid needing a composite index for a small dataset.
       rows.sort((a,b)=> (b.timestamp||"").localeCompare(a.timestamp||""));
       state.reports = rows;
       state.loaded = true;
@@ -452,57 +350,11 @@
     });
   }
 
-  // For a pill group with an "Other" option: if "Other" is selected, combine
-  // it with whatever the scout typed into the write-in box, e.g. "Other: Colson wheels".
-  // Falls back to plain "Other" if they didn't type anything.
   function resolvedValue(base, other){
     if(base === "Other") return other && other.trim() ? ("Other: " + other.trim()) : "Other";
     return base;
   }
 
-  // The inverse of resolvedValue() — given a saved value like "Other: Colson
-  // wheels" and the option list it came from, splits it back into the pill
-  // selection ("Other") and write-in text ("Colson wheels") so an existing
-  // report can be loaded back into the form for editing. A value that isn't
-  // "Unknown" and isn't one of `options` (e.g. old/legacy data) is treated
-  // as a bare "Other" write-in so nothing gets silently dropped.
-  function splitOther(value, options){
-    if(!value || value === "Unknown") return {base:"", other:""};
-    if(options.includes(value)) return {base:value, other:""};
-    if(value === "Other") return {base:"Other", other:""};
-    if(value.startsWith("Other: ")) return {base:"Other", other: value.slice(7)};
-    return {base:"Other", other: value};
-  }
-
-  // Loads an existing report back into state.form and switches to the New
-  // Report tab in edit mode. Called when "Edit this report" is clicked
-  // (wired up in attachHandlers). handleSubmit() checks state.editId to
-  // decide whether to create a new document or update this one.
-  function startEdit(r){
-    const drivebaseSplit = splitOther(r.drivebase, DRIVEBASE_OPTS);
-    const intakeSplit = splitOther(r.groundIntake, GROUND_INTAKE_OPTS);
-    const shooterSplit = splitOther(r.shooterType, SHOOTER_OPTS);
-    const autoSplit = splitOther(r.autoType, AUTO_OPTS);
-    state.form = {
-      teamNumber: r.teamNumber||"", teamName: r.teamName||"", scoutName: r.scoutName||"",
-      eventNotes: r.eventNotes||"", preScouting: r.preScouting === "Yes",
-      drivebase: drivebaseSplit.base, drivebaseOther: drivebaseSplit.other, drivebaseNotes: r.drivebaseNotes||"",
-      groundIntake: intakeSplit.base, groundIntakeOther: intakeSplit.other,
-      shooterType: shooterSplit.base, shooterOther: shooterSplit.other, shooterNotes: r.shooterNotes||"",
-      autoType: autoSplit.base, autoTypeOther: autoSplit.other,
-      crossBump: r.crossBump||"", crossTrench: r.crossTrench||"",
-      climbLevel: r.climbLevel||"",
-      impressions: r.impressions || [r.strengths, r.weaknesses].filter(Boolean).join(" · ")
-    };
-    state.editId = r.id;
-    state.editTimestamp = r.timestamp || null;
-    state.tab = "submit";
-    state.saveMsg = null;
-    render();
-  }
-
-  // Required-field check before a report can be saved. Add a line here if
-  // you want to make another field mandatory (e.g. climb level).
   function validate(f){
     if(!f.teamNumber.trim()) return "Team number is required.";
     if(!f.scoutName.trim()) return "Scout name is required.";
@@ -510,11 +362,6 @@
     return null;
   }
 
-  // Builds a report object from the current form, validates it, and writes
-  // it to Firestore as a new document. Runs when "Save report" is clicked
-  // (wired up in attachHandlers). This is also the place to add a new field
-  // to what gets saved — remember to also add it to freshForm(), FIELDS_META,
-  // and the New Report form markup in renderSubmit().
   async function handleSubmit(){
     const f = state.form;
     const err = validate(f);
@@ -525,20 +372,19 @@
       teamName: f.teamName.trim(),
       scoutName: f.scoutName.trim(),
       eventNotes: f.eventNotes.trim(),
-      preScouting: f.preScouting ? "Yes" : "No",
       drivebase: resolvedValue(f.drivebase, f.drivebaseOther),
       drivebaseNotes: f.drivebaseNotes.trim(),
       groundIntake: resolvedValue(f.groundIntake, f.groundIntakeOther),
       shooterType: resolvedValue(f.shooterType, f.shooterOther),
       shooterNotes: f.shooterNotes.trim(),
-      autoType: resolvedValue(f.autoType, f.autoTypeOther) || "Unknown",
+      autoType: f.autoType || "Unknown",
       crossBump: f.crossBump || "Unknown",
       crossTrench: f.crossTrench || "Unknown",
       climbLevel: f.climbLevel || "Unknown",
-      impressions: f.impressions.trim(),
-      timestamp: state.editId ? (state.editTimestamp || new Date().toISOString()) : new Date().toISOString()
+      strengths: f.strengths.trim(),
+      weaknesses: f.weaknesses.trim(),
+      timestamp: new Date().toISOString()
     };
-    if(state.editId) report.updatedAt = new Date().toISOString();
 
     if(!isConfigured){
       state.saveMsg = {type:"err", text: "Firebase isn't configured yet — see the banner above."};
@@ -548,16 +394,9 @@
 
     state.saving = true; render();
     try{
-      if(state.editId){
-        await fb.updateDoc(fb.doc(db, 'pit-reports', state.editId), report);
-        state.saveMsg = {type:"ok", text: "Report updated for team " + report.teamNumber + "."};
-      } else {
-        await fb.addDoc(fb.collection(db, 'pit-reports'), report);
-        state.saveMsg = {type:"ok", text: "Report saved for team " + report.teamNumber + "."};
-      }
+      await fb.addDoc(fb.collection(db, 'pit-reports'), report);
+      state.saveMsg = {type:"ok", text: "Report saved for team " + report.teamNumber + "."};
       state.form = freshForm();
-      state.editId = null;
-      state.editTimestamp = null;
     }catch(e){
       state.saveMsg = {type:"err", text: "Couldn't save — check your connection and Firestore rules."};
     }
@@ -565,8 +404,6 @@
     render();
   }
 
-  // Deletes a single report from Firestore by its document id. The
-  // confirm() dialog happens in attachHandlers before this is called.
   async function handleDelete(id){
     try{
       await fb.deleteDoc(fb.doc(db, 'pit-reports', id));
@@ -575,19 +412,12 @@
     }
   }
 
-  // ====================== CSV EXPORT ======================
-  // Wraps a value in quotes and escapes internal quotes only if it
-  // contains a comma, quote, or newline — keeps the CSV clean without
-  // quoting every single cell.
   function csvEscape(v){
     const s = String(v===undefined||v===null?"":v);
     if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
     return s;
   }
 
-  // Builds a CSV from whatever's currently filtered/searched (not
-  // necessarily every report — matches what's on screen) and triggers a
-  // browser download. Column order/labels come from FIELDS_META.
   function exportCSV(){
     const rows = filteredReports();
     if(!rows.length) return;
@@ -608,16 +438,10 @@
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }
 
-  // Applies the drivebase dropdown + search box to state.reports. Used by
-  // both renderData() (what's on screen) and exportCSV() (what gets
-  // downloaded), so the two always stay in sync.
   function filteredReports(){
     let rows = state.reports;
     if(state.drivebaseFilter !== "All"){
       rows = rows.filter(r => (r.drivebase||"").startsWith(state.drivebaseFilter));
-    }
-    if(state.preScoutingFilter !== "All"){
-      rows = rows.filter(r => (r.preScouting === "Yes") === (state.preScoutingFilter === "Yes"));
     }
     if(state.search.trim()){
       const q = state.search.trim().toLowerCase();
@@ -629,10 +453,6 @@
     return rows;
   }
 
-  // Renders one row of pill buttons for a single-select field (e.g.
-  // drivebase, shooter type). `name` must match a key in state.form.
-  // Clicking a pill toggles it via attachHandlers' .radio-pill handler,
-  // which also handles clicking twice to clear a selection.
   function pillGroup(name, options, current, extraOnclick){
     return options.map(opt => {
       const sel = current === opt;
@@ -640,20 +460,14 @@
     }).join("");
   }
 
-  // ====================== RENDER ======================
-  // The main render loop: rebuilds the whole page from `state` and
-  // reattaches event listeners. Called after every state change — there's
-  // no diffing, so this just throws away and rebuilds the DOM each time.
-  // Fine for an app this size; if it ever feels slow, that's the tradeoff.
   function render(){
     const app = document.getElementById('app');
     app.innerHTML = `
       <div class="topbar">
         <div class="topbar-inner">
           <div class="brand">
-            <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
-            <div class="brand-sub">FRC 6996 Koalafied — 2026 qualitative pit scouting</div>
+            <div class="brand-sub">2026 FIRST Robotics Competition — qualitative pit scouting</div>
           </div>
           <div class="tabs">
             <button class="tab-btn ${state.tab==='submit'?'active':''}" data-tab="submit">New Report</button>
@@ -669,33 +483,23 @@
     attachHandlers();
   }
 
-  // Builds the "New Report" tab: one .section-card per topic (drivebase,
-  // intake, shooter, auto, field crossing, climb, notes). To add a new
-  // question, copy an existing .field block, give its input/pill-group a
-  // unique id/name, then add matching entries to freshForm(), FIELDS_META,
-  // handleSubmit()'s report object, and the id-binding list in
-  // attachHandlers() (search for "const bind =").
   function renderSubmit(){
     const f = state.form;
     return `
-      ${state.editId ? `
-      <div class="edit-banner">
-        <span>Editing existing report for team <b>${esc(f.teamNumber || '—')}</b>${f.teamName ? ' — ' + esc(f.teamName) : ''}.</span>
-        <button type="button" class="btn-secondary" id="cancel-edit-btn">Cancel edit</button>
-      </div>` : ''}
       <div class="section-card identity">
         <div class="section-title">Team identity</div>
+        <p class="section-hint">Who you're scouting and who's filling this out.</p>
         <div class="grid3">
-          <div class="field"><label>Team number *</label><input type="text" inputmode="numeric" id="f-teamNumber" value="${esc(f.teamNumber)}" placeholder="e.g. 6996"></div>
-          <div class="field"><label>Team name</label><input type="text" id="f-teamName" value="${esc(f.teamName)}" placeholder="e.g. Koalafied"></div>
+          <div class="field"><label>Team number *</label><input type="text" inputmode="numeric" id="f-teamNumber" value="${esc(f.teamNumber)}" placeholder="e.g. 1676"></div>
+          <div class="field"><label>Team name</label><input type="text" id="f-teamName" value="${esc(f.teamName)}" placeholder="e.g. Pascack Pi-oneers"></div>
           <div class="field"><label>Scout name *</label><input type="text" id="f-scoutName" value="${esc(f.scoutName)}" placeholder="Your name"></div>
         </div>
-        <div class="field"><label>Event / context (optional)</label><input type="text" id="f-eventNotes" value="${esc(f.eventNotes)}" placeholder="e.g. AUSC 2026, MRT 2026"></div>
-        <div class="field checkbox-row"><input type="checkbox" id="f-preScouting" ${f.preScouting?'checked':''}><label for="f-preScouting">Pre-scouting (before the event, e.g. from film or past matches)</label></div>
+        <div class="field"><label>Event / context (optional)</label><input type="text" id="f-eventNotes" value="${esc(f.eventNotes)}" placeholder="e.g. practice field, week 2 event"></div>
       </div>
 
       <div class="section-card">
         <div class="section-title">Drivebase</div>
+        <p class="section-hint">What the robot drives on.</p>
         <div class="field">
           <label>Drivebase type *</label>
           <div class="radio-row">${pillGroup('drivebase', DRIVEBASE_OPTS, f.drivebase)}</div>
@@ -706,6 +510,7 @@
 
       <div class="section-card">
         <div class="section-title">Intake</div>
+        <p class="section-hint">How Fuel gets onto the robot.</p>
         <div class="field">
           <label>Ground intake type</label>
           <div class="radio-row">${pillGroup('groundIntake', GROUND_INTAKE_OPTS, f.groundIntake)}</div>
@@ -715,6 +520,7 @@
 
       <div class="section-card">
         <div class="section-title">Shooter</div>
+        <p class="section-hint">How Fuel is scored into the Hub.</p>
         <div class="field">
           <label>Shooter type</label>
           <div class="radio-row">${pillGroup('shooterType', SHOOTER_OPTS, f.shooterType)}</div>
@@ -725,15 +531,16 @@
 
       <div class="section-card">
         <div class="section-title">Autonomous</div>
+        <p class="section-hint">What the robot is designed to do before driver control.</p>
         <div class="field">
           <label>Auto routine type</label>
           <div class="radio-row">${pillGroup('autoType', AUTO_OPTS, f.autoType)}</div>
-          ${f.autoType==='Other' ? `<div class="other-input"><input type="text" id="f-autoTypeOther" value="${esc(f.autoTypeOther)}" placeholder="Describe auto routine"></div>` : ''}
         </div>
       </div>
 
       <div class="section-card">
         <div class="section-title">Field crossing</div>
+        <p class="section-hint">Bump and Trench are the two routes across the field.</p>
         <div class="grid2">
           <div class="field"><label>Can cross the Bump</label><div class="radio-row">${pillGroup('crossBump', YESNO_OPTS, f.crossBump)}</div></div>
           <div class="field"><label>Can cross the Trench</label><div class="radio-row">${pillGroup('crossTrench', YESNO_OPTS, f.crossTrench)}</div></div>
@@ -742,6 +549,7 @@
 
       <div class="section-card">
         <div class="section-title">Tower climb</div>
+        <p class="section-hint">Endgame climbing capability.</p>
         <div class="field">
           <label>Best climb level observed / claimed</label>
           <div class="radio-row">${pillGroup('climbLevel', CLIMB_LEVEL_OPTS, f.climbLevel)}</div>
@@ -750,18 +558,18 @@
 
       <div class="section-card">
         <div class="section-title">Scout impressions</div>
-        <div class="field"><label>Notes</label><textarea id="f-impressions" placeholder="Strengths, weaknesses, reliability worries, driving issues — anything a table of options can't capture">${esc(f.impressions)}</textarea></div>
+        <p class="section-hint">Free-form — anything a table of options can't capture.</p>
+        <div class="field"><label>Strengths</label><textarea id="f-strengths" placeholder="What this robot does well">${esc(f.strengths)}</textarea></div>
+        <div class="field"><label>Weaknesses / concerns</label><textarea id="f-weaknesses" placeholder="Reliability worries, slow cycles, driving issues">${esc(f.weaknesses)}</textarea></div>
       </div>
 
       <div class="submit-row">
-        <button class="btn-primary" id="submit-btn" ${state.saving?'disabled':''}>${state.saving ? 'Saving…' : (state.editId ? 'Save changes' : 'Save report')}</button>
+        <button class="btn-primary" id="submit-btn" ${state.saving?'disabled':''}>${state.saving ? 'Saving…' : 'Save report'}</button>
         ${state.saveMsg ? `<span class="status-msg ${state.saveMsg.type}">${esc(state.saveMsg.text)}</span>` : ''}
       </div>
     `;
   }
 
-  // Builds the "Scouting Data" tab: toolbar (search/filter/view toggle/export)
-  // plus either the table or the card list, depending on state.dataView.
   function renderData(){
     const rows = filteredReports();
     const drivebaseOptions = ["All", ...DRIVEBASE_OPTS.filter(o=>o!=='Other')];
@@ -789,11 +597,6 @@
         <select id="drivebase-filter">
           ${drivebaseOptions.map(o=>`<option value="${esc(o)}" ${state.drivebaseFilter===o?'selected':''}>${o==='All'?'All drivebases':esc(o)}</option>`).join("")}
         </select>
-        <select id="prescouting-filter">
-          <option value="All" ${state.preScoutingFilter==='All'?'selected':''}>All reports</option>
-          <option value="Yes" ${state.preScoutingFilter==='Yes'?'selected':''}>Pre-scouted only</option>
-          <option value="No" ${state.preScoutingFilter==='No'?'selected':''}>Not pre-scouted</option>
-        </select>
         <div class="spacer"></div>
         <div class="view-toggle">
           <button data-view="table" class="${state.dataView==='table'?'active':''}">Table</button>
@@ -806,40 +609,28 @@
     `;
   }
 
-  // Table view (default) — one row per report, one column per field in
-  // `cols`, plus a combined Notes column. To add/remove a table column,
-  // edit the `cols` array only — order here is the display order, and
-  // it's independent from FIELDS_META (which controls CSV export).
   function renderTable(rows){
     const cols = [
       ["teamNumber","Team #"], ["teamName","Team Name"], ["drivebase","Drivebase"],
       ["groundIntake","Intake"], ["shooterType","Shooter"], ["autoType","Auto"],
       ["crossBump","Bump"], ["crossTrench","Trench"], ["climbLevel","Climb"], ["scoutName","Scout"]
     ];
-    const head = `<th style="text-align:center;" title="Pre-scouted">PS</th>` + cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th>Notes</th>`;
+    const head = cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th>Notes</th>`;
     const body = rows.map(r=>{
-      const preScoutCell = r.preScouting==='Yes'
-        ? `<td class="prescout-cell" title="Pre-scouted"><span class="prescout-dot"></span></td>`
-        : `<td class="dim">—</td>`;
       const cells = cols.map((c,i) => {
         const cls = i===0 ? 'team-cell' : (i===1 ? '' : 'dim');
         return `<td class="${cls}">${esc(r[c[0]]||'—')}</td>`;
       }).join("");
-      const notes = r.impressions || [r.strengths, r.weaknesses].filter(Boolean).join(" · ");
-      return `<tr>${preScoutCell}${cells}<td class="notes-cell">${esc(notes || '—')}</td></tr>`;
+      const notes = [r.strengths, r.weaknesses].filter(Boolean).join(" · ");
+      return `<tr>${cells}<td class="notes-cell">${esc(notes || '—')}</td></tr>`;
     }).join("");
     return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
-  // Card view (alternate) — one collapsed summary row per report; clicking
-  // it (handled in attachHandlers) toggles the full detail list open via
-  // the .open class / state.openRowId.
   function renderRow(r){
     const open = state.openRowId === r.id;
     const submitted = new Date(r.timestamp);
     const submittedStr = isNaN(submitted) ? "" : submitted.toLocaleString();
-    const updated = r.updatedAt ? new Date(r.updatedAt) : null;
-    const updatedStr = updated && !isNaN(updated) ? " · edited " + updated.toLocaleString() : "";
     return `
       <div class="report-row ${open?'open':''}" data-row-id="${r.id}">
         <div class="report-row-head">
@@ -847,12 +638,11 @@
           <span class="team-badge">${esc(r.teamNumber)}</span>
           <span class="team-name">${esc(r.teamName || 'Unnamed team')}</span>
           <div class="row-tags">
-            ${r.preScouting==='Yes' ? `<span class="tag prescouted">Pre-scouted</span>` : ''}
             <span class="tag">${esc(r.drivebase||'—')}</span>
             <span class="tag">Climb: ${esc(r.climbLevel||'—')}</span>
           </div>
         </div>
-        <div class="row-meta">Scouted by ${esc(r.scoutName||'—')}${submittedStr ? ' · ' + submittedStr : ''}${r.eventNotes ? ' · ' + esc(r.eventNotes) : ''}${updatedStr}</div>
+        <div class="row-meta">Scouted by ${esc(r.scoutName||'—')}${submittedStr ? ' · ' + submittedStr : ''}${r.eventNotes ? ' · ' + esc(r.eventNotes) : ''}</div>
         <div class="report-detail">
           <dl class="detail-grid">
             <div class="detail-item"><dt>Ground intake</dt><dd>${esc(r.groundIntake||'—')}</dd></div>
@@ -863,26 +653,15 @@
             <div class="detail-item"><dt>Best climb level</dt><dd>${esc(r.climbLevel||'—')}</dd></div>
             ${r.drivebaseNotes ? `<div class="detail-item detail-full"><dt>Drivebase notes</dt><dd>${esc(r.drivebaseNotes)}</dd></div>` : ''}
             ${r.shooterNotes ? `<div class="detail-item detail-full"><dt>Shooter notes</dt><dd>${esc(r.shooterNotes)}</dd></div>` : ''}
-            ${r.impressions ? `<div class="detail-item detail-full"><dt>Scout impressions</dt><dd>${esc(r.impressions)}</dd></div>` : ''}
-            ${!r.impressions && r.strengths ? `<div class="detail-item detail-full"><dt>Strengths</dt><dd>${esc(r.strengths)}</dd></div>` : ''}
-            ${!r.impressions && r.weaknesses ? `<div class="detail-item detail-full"><dt>Weaknesses / concerns</dt><dd>${esc(r.weaknesses)}</dd></div>` : ''}
+            ${r.strengths ? `<div class="detail-item detail-full"><dt>Strengths</dt><dd>${esc(r.strengths)}</dd></div>` : ''}
+            ${r.weaknesses ? `<div class="detail-item detail-full"><dt>Weaknesses / concerns</dt><dd>${esc(r.weaknesses)}</dd></div>` : ''}
           </dl>
-          <div class="detail-actions">
-            <button class="edit-btn" data-edit-id="${r.id}">Edit this report</button>
-            <button class="delete-btn" data-delete-id="${r.id}">Delete this report</button>
-          </div>
+          <button class="delete-btn" data-delete-id="${r.id}">Delete this report</button>
         </div>
       </div>
     `;
   }
 
-  // ====================== EVENT HANDLERS ======================
-  // Since render() rebuilds the DOM from scratch every time, any listeners
-  // attached to the old elements are gone — this function re-attaches them
-  // to the new elements after every render(). It's called once at the end
-  // of render(). If you add a new input/button in one of the render*()
-  // functions above, add its handler here too (grouped by which tab it
-  // belongs to) or it'll render but do nothing when clicked.
   function attachHandlers(){
     document.querySelectorAll('.tab-btn').forEach(el=>{
       el.onclick = ()=>{ state.tab = el.dataset.tab; state.saveMsg=null; render(); };
@@ -896,12 +675,8 @@
       bind('f-teamNumber','teamNumber'); bind('f-teamName','teamName'); bind('f-scoutName','scoutName');
       bind('f-eventNotes','eventNotes'); bind('f-drivebaseOther','drivebaseOther'); bind('f-drivebaseNotes','drivebaseNotes');
       bind('f-groundIntakeOther','groundIntakeOther'); bind('f-shooterOther','shooterOther'); bind('f-shooterNotes','shooterNotes');
-      bind('f-autoTypeOther','autoTypeOther');
 
-      bind('f-impressions','impressions');
-
-      const preScoutingEl = document.getElementById('f-preScouting');
-      if(preScoutingEl) preScoutingEl.onchange = ()=>{ state.form.preScouting = preScoutingEl.checked; };
+      bind('f-strengths','strengths'); bind('f-weaknesses','weaknesses');
 
       document.querySelectorAll('.radio-pill').forEach(el=>{
         el.onclick = ()=>{
@@ -915,15 +690,6 @@
 
       const submitBtn = document.getElementById('submit-btn');
       if(submitBtn) submitBtn.onclick = handleSubmit;
-
-      const cancelEditBtn = document.getElementById('cancel-edit-btn');
-      if(cancelEditBtn) cancelEditBtn.onclick = ()=>{
-        state.editId = null;
-        state.editTimestamp = null;
-        state.form = freshForm();
-        state.saveMsg = null;
-        render();
-      };
     }
 
     if(state.tab==='data'){
@@ -931,8 +697,6 @@
       if(searchEl) searchEl.oninput = ()=>{ state.search = searchEl.value; render(); };
       const filterEl = document.getElementById('drivebase-filter');
       if(filterEl) filterEl.onchange = ()=>{ state.drivebaseFilter = filterEl.value; render(); };
-      const preScoutingFilterEl = document.getElementById('prescouting-filter');
-      if(preScoutingFilterEl) preScoutingFilterEl.onchange = ()=>{ state.preScoutingFilter = preScoutingFilterEl.value; render(); };
       const exportBtn = document.getElementById('export-btn');
       if(exportBtn) exportBtn.onclick = exportCSV;
       document.querySelectorAll('.view-toggle button').forEach(el=>{
@@ -955,20 +719,9 @@
           }
         };
       });
-      document.querySelectorAll('[data-edit-id]').forEach(el=>{
-        el.onclick = (ev)=>{
-          ev.stopPropagation();
-          const r = state.reports.find(rep => rep.id === el.dataset.editId);
-          if(r) startEdit(r);
-        };
-      });
     }
   }
 
-  // ====================== STARTUP ======================
-  // First paint immediately (shows the loading state), then kick off the
-  // Firestore listener, which will call render() again once data arrives
-  // (or immediately, with an empty list, if Firebase isn't configured).
   render();
   startListening();
 </script>
