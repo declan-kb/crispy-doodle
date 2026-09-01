@@ -81,6 +81,7 @@
     --border-light: #37414f;
     --ok: #4caf7d;
     --warn: #d9645c;
+    --highlight-team: var(--steel);
   }
 
   /* ---------- Base elements (inputs, buttons, focus states) ---------- */
@@ -233,6 +234,11 @@
   .summary-table tbody tr{ background:var(--panel); }
   .summary-table tbody tr:hover{ background:var(--panel-alt); }
   .summary-table td.team-cell{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; color:var(--accent); }
+  /* Highlighted teams (see isHighlightTeam() in the script) — the same
+     teal used elsewhere (EPA, section borders) instead of the usual
+     accent yellow, e.g. to make your own team's number pop out of a
+     roster full of others. */
+  .summary-table td.team-cell.highlight-team{ color:var(--highlight-team); }
   .summary-table td.dim{ color:var(--text-dim); }
   .summary-table td.notes-cell{ white-space:normal; min-width:220px; color:var(--text-dim); font-size:12.5px; }
   .summary-table td input[type=text]{ padding:6px 8px; font-size:13px; }
@@ -357,6 +363,11 @@
   const CLIMB_LEVEL_OPTS = ["None","Level 1","Level 2","Level 3","Unknown"];
   const SCOUT_STATUS_OPTS = ["Pre-scouted","Scouted at event"];
 
+  // Team numbers to highlight in teal wherever a team-cell renders (see
+  // isHighlightTeam() below), instead of the usual accent yellow — e.g.
+  // your own team, so it's easy to spot in a long roster.
+  const HIGHLIGHT_TEAMS = ["6996","9976"];
+
   // FIELDS_META lists every field that gets saved, in [key, displayLabel] pairs.
   // It's the single source of truth for CSV export column order/labels
   // (see exportCSV() below). If you add a brand-new field to the form, add
@@ -437,6 +448,21 @@
   function esc(s){
     return String(s===undefined||s===null?"":s)
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  // Whether a team number should render in the highlight color instead of
+  // the usual accent yellow (see HIGHLIGHT_TEAMS above and the
+  // .team-cell.highlight-team CSS rule).
+  function isHighlightTeam(team){
+    return HIGHLIGHT_TEAMS.includes(String(team||"").trim());
+  }
+
+  // Builds a team-cell's class string, adding highlight-team when its
+  // number is one of HIGHLIGHT_TEAMS. `base` is whatever other classes
+  // the cell already needs (e.g. "team-cell", or "" for a non-team-cell
+  // column in a shared cols-array render loop).
+  function teamCellClass(base, team){
+    return isHighlightTeam(team) ? (base ? base + " highlight-team" : "highlight-team") : base;
   }
 
   // Small localStorage wrappers, used to remember the last event code and the
@@ -1340,7 +1366,7 @@
       const rep = reportForTeam(t.team);
       const statusCell = statusTagHtml(rep);
       const cells = cols.map((c,i) => {
-        const cls = i===0 ? 'team-cell' : (i===1 ? '' : 'dim');
+        const cls = i===0 ? teamCellClass('team-cell', t.team) : (i===1 ? '' : 'dim');
         const val = c[0]==='teamNumber' ? t.team : c[0]==='teamName' ? ((rep && rep.teamName) || t.teamName) : (rep ? rep[c[0]] : '');
         return `<td class="${cls}">${esc(val||'—')}</td>`;
       }).join("");
@@ -1512,7 +1538,7 @@
             </div>
           </td>
           <td class="dim">${i+1}</td>
-          <td class="team-cell" style="cursor:pointer;" data-open-team="${esc(t.team)}" title="Fill in / view this team's scouting data">${esc(t.team)}</td>
+          <td class="${teamCellClass('team-cell', t.team)}" style="cursor:pointer;" data-open-team="${esc(t.team)}" title="Fill in / view this team's scouting data">${esc(t.team)}</td>
           <td>${esc(name)}</td>
           <td class="dim">${epaCellHtml(t.team)}</td>
           <td class="dim">${t.qualRank ? '#'+t.qualRank : '—'}</td>
@@ -1589,7 +1615,7 @@
     const head = `<th>Team #</th><th>Team Name</th><th>Quals Rank</th><th></th>`;
     const body = rows.map(t=>`
       <tr>
-        <td class="team-cell">${esc(t.team)}</td>
+        <td class="${teamCellClass('team-cell', t.team)}">${esc(t.team)}</td>
         <td><input type="text" data-team-name-for="${esc(t.team)}" value="${esc(t.teamName)}" placeholder="Team name"></td>
         <td class="dim">${t.qualRank ? '#'+t.qualRank : '—'}</td>
         <td><button class="delete-btn" data-remove-team="${esc(t.team)}">Remove</button></td>
