@@ -268,6 +268,11 @@
   .loading-note{ font-size:13px; color:var(--text-faint); padding: 40px 0; text-align:center; }
 
   /* ---------- Pick List tab: do-not-pick styling + tiny action buttons ---------- */
+  /* Marks the row right after the last numbered rank (see TOP_RANKED_COUNT
+     in the script) with a visible divider, so it's obvious where numbered
+     ranking stops and the rest of the roster (still sorted, just unranked)
+     begins. */
+  .summary-table tbody tr.rank-cutoff td{ border-top:2px solid var(--accent-deep); }
   .summary-table tbody tr.dnp-row{ background:rgba(217,100,92,0.05); }
   .summary-table tbody tr.dnp-row td:not(.dnp-actions){ text-decoration:line-through; opacity:0.45; }
   .btn-tiny{
@@ -367,6 +372,14 @@
   // isHighlightTeam() below), instead of the usual accent yellow — e.g.
   // your own team, so it's easy to spot in a long roster.
   const HIGHLIGHT_TEAMS = ["6996","9976"];
+
+  // Only this many spots at the top of the Pick List get an actual rank
+  // number (matches a standard 8-alliance selection: 8 captains + 8 first
+  // picks + 8 second picks = 24 teams that can actually get picked).
+  // Teams past this point still show — sorted, searchable, DNP-able —
+  // just without a numbered rank, since ranking them precisely doesn't
+  // change alliance selection strategy the way the top 24 does.
+  const TOP_RANKED_COUNT = 24;
 
   // FIELDS_META lists every field that gets saved, in [key, displayLabel] pairs.
   // It's the single source of truth for CSV export column order/labels
@@ -1238,7 +1251,7 @@
       const epaEntry = epaCache[t.team];
       const epa = epaEntry && epaEntry.status === 'ok' && epaEntry.epa != null ? epaEntry.epa.toFixed(1) : "";
       lines.push([
-        i+1, t.team, (rep && rep.teamName) || t.teamName || "", epa, t.qualRank || "",
+        i < TOP_RANKED_COUNT ? i+1 : "", t.team, (rep && rep.teamName) || t.teamName || "", epa, t.qualRank || "",
         state.teamList.doNotPick[t.team] ? "Yes" : "No",
         rep ? rep.status : "Not scouted",
         rep ? (rep.drivebase||"") : "",
@@ -1522,8 +1535,10 @@
       const name = (rep && rep.teamName) || t.teamName || "—";
       const notes = rep ? rep.impressions : "";
       const scoutedCell = statusTagHtml(rep);
+      const rank = i < TOP_RANKED_COUNT ? String(i+1) : '—';
+      const rowClasses = [isDNP ? 'dnp-row' : '', i === TOP_RANKED_COUNT ? 'rank-cutoff' : ''].filter(Boolean).join(' ');
       return `
-        <tr class="${isDNP?'dnp-row':''}">
+        <tr class="${rowClasses}">
           <td class="dnp-actions">
             <div style="display:flex; gap:6px; align-items:center;">
               <button class="btn-tiny" data-move-up="${esc(t.team)}" title="Move up">▲</button>
@@ -1531,7 +1546,7 @@
               <button class="btn-tiny ${isDNP?'active':''}" data-toggle-dnp="${esc(t.team)}" title="Toggle do-not-pick">${isDNP?'Unmark':'DNP'}</button>
             </div>
           </td>
-          <td class="dim">${i+1}</td>
+          <td class="dim">${rank}</td>
           <td class="${teamCellClass('team-cell', t.team)}" style="cursor:pointer;" data-open-team="${esc(t.team)}" title="Fill in / view this team's scouting data">${esc(t.team)}</td>
           <td>${esc(name)}</td>
           <td class="dim">${epaCellHtml(t.team)}</td>
