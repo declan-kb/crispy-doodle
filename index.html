@@ -359,14 +359,13 @@
   // it here too or it won't show up in the CSV export.
   const FIELDS_META = [
     ["teamNumber","Team #"], ["teamName","Team Name"], ["scoutName","Scout"],
-    ["eventNotes","Event"], ["status","Scout Status"],
+    ["status","Scout Status"], ["impressions","Scout Impressions"],
     ["drivebase","Drivebase"], ["drivebaseNotes","Drivebase Notes"],
     ["groundIntake","Ground Intake"],
     ["shooterType","Shooter Type"], ["shooterNotes","Shooter Notes"],
     ["autoType","Auto Routine"],
     ["crossBump","Can Cross Bump"], ["crossTrench","Can Cross Trench"],
     ["climbLevel","Best Climb Level"],
-    ["impressions","Scout Impressions"],
     ["timestamp","Submitted"], ["updatedAt","Last Updated"]
   ];
 
@@ -457,7 +456,7 @@
     settingsSearch: "",
 
     // ---- The one shared team list, synced from the 'settings/team-list' doc ----
-    teamList: { teams: [], doNotPick: {}, order: [] },
+    teamList: { teams: [], doNotPick: {}, order: [], eventLabel: "" },
     teamListError: null
   };
 
@@ -468,7 +467,7 @@
     const listed = state.teamList.teams.find(t => t.team === team);
     return {
       teamName: (listed && listed.teamName) || "",
-      scoutName:"", eventNotes:"", status:"",
+      scoutName:"", status:"",
       drivebase:"", drivebaseOther:"", drivebaseNotes:"",
       groundIntake:"", groundIntakeOther:"",
       shooterType:"", shooterOther:"", shooterNotes:"",
@@ -568,7 +567,7 @@
       const autoSplit = splitOther(existing.autoType, AUTO_OPTS);
       state.scoutForm = {
         teamName: existing.teamName || "",
-        scoutName: existing.scoutName || "", eventNotes: existing.eventNotes || "",
+        scoutName: existing.scoutName || "",
         status: existing.status || "",
         drivebase: drivebaseSplit.base, drivebaseOther: drivebaseSplit.other, drivebaseNotes: existing.drivebaseNotes||"",
         groundIntake: intakeSplit.base, groundIntakeOther: intakeSplit.other,
@@ -628,7 +627,6 @@
       teamNumber: team,
       teamName: teamName,
       scoutName: f.scoutName.trim(),
-      eventNotes: f.eventNotes.trim(),
       status: f.status,
       drivebase: resolvedValue(f.drivebase, f.drivebaseOther),
       drivebaseNotes: f.drivebaseNotes.trim(),
@@ -753,7 +751,7 @@
     const ref = fb.doc(db, 'settings', 'team-list');
     fb.onSnapshot(ref, (snap)=>{
       const d = snap.exists() ? snap.data() : {};
-      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, order: d.order || [] };
+      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, order: d.order || [], eventLabel: d.eventLabel || "" };
       state.teamListError = null;
       render();
     }, (err)=>{
@@ -855,6 +853,17 @@
     state.teamList = Object.assign({}, state.teamList, { teams });
     render();
     await saveTeamList({ teams });
+  }
+
+  // Sets the app-wide event label (e.g. "AUSC 2026") shown in the topbar
+  // and Settings — set once here instead of typed into every team's
+  // scouting form. Purely descriptive: unlike settingsEventCode, it's
+  // never used for Statbotics/TBA lookups.
+  async function updateEventLabel(value){
+    const label = (value||"").trim();
+    state.teamList = Object.assign({}, state.teamList, { eventLabel: label });
+    render();
+    await saveTeamList({ eventLabel: label });
   }
 
   // Removes one team from the team list (works regardless of which source
@@ -1038,6 +1047,7 @@
           <div class="brand">
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
+            ${state.teamList.eventLabel ? `<div class="brand-sub">${esc(state.teamList.eventLabel)}</div>` : ''}
           </div>
           <div class="tabs">
             <button class="tab-btn ${state.tab==='data'?'active':''}" data-tab="data">Scouting Data (${state.reports.length})</button>
@@ -1159,11 +1169,15 @@
           <div class="field"><label>Team name</label><input type="text" id="f-teamName" value="${esc(f.teamName)}" placeholder="e.g. Koalafied"></div>
           <div class="field"><label>Scout name *</label><input type="text" id="f-scoutName" value="${esc(f.scoutName)}" placeholder="Your name"></div>
         </div>
-        <div class="field"><label>Event</label><input type="text" id="f-eventNotes" value="${esc(f.eventNotes)}" placeholder="e.g. AUSC 2026, MRT 2026"></div>
         <div class="field">
           <label>Scout status *</label>
           <div class="radio-row">${pillGroup('status', SCOUT_STATUS_OPTS, f.status)}</div>
         </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Scout impressions</div>
+        <div class="field"><label>Notes</label><textarea id="f-impressions" placeholder="Strengths, weaknesses, reliability worries, driving issues — anything a table of options can't capture">${esc(f.impressions)}</textarea></div>
       </div>
 
       <div class="section-card">
@@ -1220,11 +1234,6 @@
         </div>
       </div>
 
-      <div class="section-card">
-        <div class="section-title">Scout impressions</div>
-        <div class="field"><label>Notes</label><textarea id="f-impressions" placeholder="Strengths, weaknesses, reliability worries, driving issues — anything a table of options can't capture">${esc(f.impressions)}</textarea></div>
-      </div>
-
       <div class="submit-row">
         <button class="btn-primary" id="submit-btn" ${state.scoutSaving?'disabled':''}>${state.scoutSaving ? 'Saving…' : 'Save'}</button>
         ${isEditing ? `<button type="button" class="delete-btn" id="delete-scout-btn">Delete scouting data</button>` : ''}
@@ -1271,7 +1280,7 @@
   // table sideways, then rank position, team info, EPA, quals rank
   // (Statbotics only), scout status, a few key scouting fields, and notes.
   function renderRankTable(rows){
-    const head = `<th>Actions</th><th>#</th><th>Team #</th><th>Team Name</th><th title="Statbotics ${EPA_YEAR} EPA">EPA</th><th title="Qualification-match rank at the event (Statbotics only)">Quals Rank</th><th>Status</th><th>Drivebase</th><th>Shooter</th><th>Climb</th><th>Notes</th>`;
+    const head = `<th>Actions</th><th>#</th><th>Team #</th><th>Team Name</th><th title="Statbotics ${EPA_YEAR} EPA">EPA</th><th title="Qualification-match rank at the event (Statbotics only)">Quals Rank</th><th>Status</th><th>Notes</th><th>Drivebase</th><th>Shooter</th><th>Climb</th>`;
     const body = rows.map((t,i)=>{
       const rep = reportForTeam(t.team);
       const isDNP = !!state.teamList.doNotPick[t.team];
@@ -1297,10 +1306,10 @@
           <td class="dim">${epaCellHtml(t.team)}</td>
           <td class="dim">${t.qualRank ? '#'+t.qualRank : '—'}</td>
           <td>${scoutedCell}</td>
+          <td class="notes-cell">${esc(notes || '—')}</td>
           <td class="dim">${esc(rep ? (rep.drivebase||'—') : '—')}</td>
           <td class="dim">${esc(rep ? (rep.shooterType||'—') : '—')}</td>
           <td class="dim">${esc(rep ? (rep.climbLevel||'—') : '—')}</td>
-          <td class="notes-cell">${esc(notes || '—')}</td>
         </tr>`;
     }).join("");
     return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -1311,6 +1320,13 @@
   // an editable name field and a Remove button per team.
   function renderSettings(){
     const totalTeams = state.teamList.teams.length;
+
+    const eventLabelField = `
+      <div class="field" style="max-width:320px;">
+        <label>Event label (optional)</label>
+        <input type="text" id="settings-event-label" value="${esc(state.teamList.eventLabel)}" placeholder="e.g. AUSC 2026">
+      </div>
+    `;
 
     const lookupToolbar = `
       <div class="data-toolbar">
@@ -1336,7 +1352,7 @@
     `;
 
     if(!totalTeams){
-      return lookupToolbar + `
+      return eventLabelField + lookupToolbar + `
         <div class="empty-state">
           <h3>No teams loaded</h3>
           <p>Enter an event code and load teams from Statbotics or TBA, or switch to Manual entry above.</p>
@@ -1352,7 +1368,7 @@
       <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}</div>
     `;
     const body = rows.length ? renderSettingsTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search.</p></div>`;
-    return lookupToolbar + filterToolbar + body;
+    return eventLabelField + lookupToolbar + filterToolbar + body;
   }
 
   // Table for the Settings tab: team number, an editable name field
@@ -1388,7 +1404,7 @@
         if(el) el.oninput = ()=>{ state.scoutForm[key] = el.value; };
       };
       bind('f-teamName','teamName'); bind('f-scoutName','scoutName');
-      bind('f-eventNotes','eventNotes'); bind('f-drivebaseOther','drivebaseOther'); bind('f-drivebaseNotes','drivebaseNotes');
+      bind('f-drivebaseOther','drivebaseOther'); bind('f-drivebaseNotes','drivebaseNotes');
       bind('f-groundIntakeOther','groundIntakeOther'); bind('f-shooterOther','shooterOther'); bind('f-shooterNotes','shooterNotes');
       bind('f-autoTypeOther','autoTypeOther');
       bind('f-impressions','impressions');
@@ -1451,6 +1467,8 @@
     }
 
     if(state.tab==='settings'){
+      const eventLabelEl = document.getElementById('settings-event-label');
+      if(eventLabelEl) eventLabelEl.onchange = ()=> updateEventLabel(eventLabelEl.value);
       const eventCodeEl = document.getElementById('settings-event-code');
       if(eventCodeEl) eventCodeEl.oninput = ()=>{ state.settingsEventCode = eventCodeEl.value; };
       const sourceEl = document.getElementById('settings-source');
