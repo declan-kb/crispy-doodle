@@ -147,6 +147,30 @@
   .count-strip{ font-size:13px; color:var(--text-faint); margin-bottom:14px; }
   .count-strip b{ color:var(--text); }
 
+  .view-toggle{ display:flex; gap:2px; background:var(--panel-alt); border:1px solid var(--border-light); border-radius:4px; padding:2px; }
+  .view-toggle button{
+    background:transparent; color:var(--text-dim); font-size:13px; font-weight:600;
+    padding:7px 14px; border-radius:3px;
+  }
+  .view-toggle button.active{ background:var(--panel-raised); color:var(--text); }
+  .view-toggle button:hover:not(.active){ color:var(--text); }
+
+  .table-scroll{ overflow-x:auto; border:1px solid var(--border); border-radius:4px; }
+  .summary-table{ width:100%; border-collapse:collapse; font-size:13px; white-space:nowrap; }
+  .summary-table th{
+    text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.4px;
+    color:var(--text-faint); font-weight:600; background:var(--panel-alt);
+    padding:10px 14px; border-bottom:1px solid var(--border-light); position:sticky; top:0;
+  }
+  .summary-table td{
+    padding:10px 14px; border-bottom:1px solid var(--border); color:var(--text);
+  }
+  .summary-table tbody tr{ background:var(--panel); }
+  .summary-table tbody tr:hover{ background:var(--panel-alt); }
+  .summary-table td.team-cell{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; color:var(--accent); }
+  .summary-table td.dim{ color:var(--text-dim); }
+  .summary-table td.notes-cell{ white-space:normal; min-width:220px; color:var(--text-dim); font-size:12.5px; }
+
   .report-list{ display:flex; flex-direction:column; gap:10px; }
   .report-row{
     background:var(--panel); border:1px solid var(--border); border-radius:4px;
@@ -237,7 +261,7 @@
     messagingSenderId: "213708242808",
     appId: "1:213708242808:web:a79ad6ab4b9af46085928d"
   };
-  
+
   const isConfigured = firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith("YOUR_");
 
   let db = null, fb = null;
@@ -251,24 +275,22 @@
     document.getElementById('setup-banner').style.display = 'block';
   }
 
-  const DRIVEBASE_OPTS = ["Swerve","West Coast / Tank","Mecanum","Kit of Parts (KOP)","Other"];
-  const GROUND_INTAKE_OPTS = ["Under-bumper roller","Over-bumper roller","Claw / pincer","Funnel","No ground intake","Other"];
-  const HUMAN_LOAD_OPTS = ["Yes, dedicated feeder","No","Unknown"];
-  const SHOOTER_OPTS = ["Fixed angle","Adjustable hood","Turret (rotating)","Direct dump / point-blank","No shooter","Other"];
-  const AUTO_OPTS = ["Leave only (mobility)","Score preload, then leave","Score + climb Level 1","Multi-fuel cycling","Multi-fuel + climb","Other"];
+  const DRIVEBASE_OPTS = ["Swerve","Kit of Parts (KOP)","Other"];
+  const GROUND_INTAKE_OPTS = ["Under-bumper","Over-bumper","No intake","Other"];
+  const SHOOTER_OPTS = ["Turreted","Adjustable hood","Fixed angle","No shooter","Other"];
+  const AUTO_OPTS = ["Nothing","Score preload","Score preload + climb L1","Multiple cycles"];
   const YESNO_OPTS = ["Yes","No","Unknown"];
   const CLIMB_LEVEL_OPTS = ["None","Level 1","Level 2","Level 3","Unknown"];
-  const CLIMB_MECH_OPTS = ["Static hook","Winch / elevator","Telescoping arm","Pneumatic","No climber","Other"];
 
   const FIELDS_META = [
     ["teamNumber","Team #"], ["teamName","Team Name"], ["scoutName","Scout"],
     ["eventNotes","Event / Context"],
     ["drivebase","Drivebase"], ["drivebaseNotes","Drivebase Notes"],
-    ["groundIntake","Ground Intake"], ["humanLoad","Human Player Loading"],
+    ["groundIntake","Ground Intake"],
     ["shooterType","Shooter Type"], ["shooterNotes","Shooter Notes"],
     ["autoType","Auto Routine"],
     ["crossBump","Can Cross Bump"], ["crossTrench","Can Cross Trench"],
-    ["climbLevel","Best Climb Level"], ["climbMechanism","Climb Mechanism"],
+    ["climbLevel","Best Climb Level"],
     ["strengths","Strengths"], ["weaknesses","Weaknesses / Concerns"],
     ["timestamp","Submitted"]
   ];
@@ -282,6 +304,7 @@
     saveMsg: null,
     search: "",
     drivebaseFilter: "All",
+    dataView: "table",
     openRowId: null,
     form: freshForm()
   };
@@ -291,11 +314,10 @@
       teamNumber:"", teamName:"", scoutName:"", eventNotes:"",
       drivebase:"", drivebaseOther:"", drivebaseNotes:"",
       groundIntake:"", groundIntakeOther:"",
-      humanLoad:"",
       shooterType:"", shooterOther:"", shooterNotes:"",
-      autoType:"", autoOther:"",
+      autoType:"",
       crossBump:"", crossTrench:"",
-      climbLevel:"", climbMechanism:"", climbMechanismOther:"",
+      climbLevel:"",
       strengths:"", weaknesses:""
     };
   }
@@ -353,14 +375,12 @@
       drivebase: resolvedValue(f.drivebase, f.drivebaseOther),
       drivebaseNotes: f.drivebaseNotes.trim(),
       groundIntake: resolvedValue(f.groundIntake, f.groundIntakeOther),
-      humanLoad: f.humanLoad || "Unknown",
       shooterType: resolvedValue(f.shooterType, f.shooterOther),
       shooterNotes: f.shooterNotes.trim(),
-      autoType: resolvedValue(f.autoType, f.autoOther),
+      autoType: f.autoType || "Unknown",
       crossBump: f.crossBump || "Unknown",
       crossTrench: f.crossTrench || "Unknown",
       climbLevel: f.climbLevel || "Unknown",
-      climbMechanism: resolvedValue(f.climbMechanism, f.climbMechanismOther),
       strengths: f.strengths.trim(),
       weaknesses: f.weaknesses.trim(),
       timestamp: new Date().toISOString()
@@ -489,16 +509,12 @@
       </div>
 
       <div class="section-card">
-        <div class="section-title">Intake &amp; loading</div>
+        <div class="section-title">Intake</div>
         <p class="section-hint">How Fuel gets onto the robot.</p>
         <div class="field">
           <label>Ground intake type</label>
           <div class="radio-row">${pillGroup('groundIntake', GROUND_INTAKE_OPTS, f.groundIntake)}</div>
           ${f.groundIntake==='Other' ? `<div class="other-input"><input type="text" id="f-groundIntakeOther" value="${esc(f.groundIntakeOther)}" placeholder="Describe intake"></div>` : ''}
-        </div>
-        <div class="field">
-          <label>Takes Fuel from a human player</label>
-          <div class="radio-row">${pillGroup('humanLoad', HUMAN_LOAD_OPTS, f.humanLoad)}</div>
         </div>
       </div>
 
@@ -519,7 +535,6 @@
         <div class="field">
           <label>Auto routine type</label>
           <div class="radio-row">${pillGroup('autoType', AUTO_OPTS, f.autoType)}</div>
-          ${f.autoType==='Other' ? `<div class="other-input"><input type="text" id="f-autoOther" value="${esc(f.autoOther)}" placeholder="Describe auto routine"></div>` : ''}
         </div>
       </div>
 
@@ -538,11 +553,6 @@
         <div class="field">
           <label>Best climb level observed / claimed</label>
           <div class="radio-row">${pillGroup('climbLevel', CLIMB_LEVEL_OPTS, f.climbLevel)}</div>
-        </div>
-        <div class="field">
-          <label>Climb mechanism</label>
-          <div class="radio-row">${pillGroup('climbMechanism', CLIMB_MECH_OPTS, f.climbMechanism)}</div>
-          ${f.climbMechanism==='Other' ? `<div class="other-input"><input type="text" id="f-climbMechanismOther" value="${esc(f.climbMechanismOther)}" placeholder="Describe climb mechanism"></div>` : ''}
         </div>
       </div>
 
@@ -575,6 +585,8 @@
         <h3>No matches</h3>
         <p>No reports match your search or filter.</p>
       </div>`;
+    } else if(state.dataView === 'table'){
+      body = renderTable(rows);
     } else {
       body = `<div class="report-list">` + rows.map(r => renderRow(r)).join("") + `</div>`;
     }
@@ -586,11 +598,33 @@
           ${drivebaseOptions.map(o=>`<option value="${esc(o)}" ${state.drivebaseFilter===o?'selected':''}>${o==='All'?'All drivebases':esc(o)}</option>`).join("")}
         </select>
         <div class="spacer"></div>
+        <div class="view-toggle">
+          <button data-view="table" class="${state.dataView==='table'?'active':''}">Table</button>
+          <button data-view="cards" class="${state.dataView==='cards'?'active':''}">Cards</button>
+        </div>
         <button class="btn-export" id="export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
       </div>
       <div class="count-strip">Showing <b>${rows.length}</b> of <b>${state.reports.length}</b> report${state.reports.length===1?'':'s'}</div>
       ${body}
     `;
+  }
+
+  function renderTable(rows){
+    const cols = [
+      ["teamNumber","Team #"], ["teamName","Team Name"], ["drivebase","Drivebase"],
+      ["groundIntake","Intake"], ["shooterType","Shooter"], ["autoType","Auto"],
+      ["crossBump","Bump"], ["crossTrench","Trench"], ["climbLevel","Climb"], ["scoutName","Scout"]
+    ];
+    const head = cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th>Notes</th>`;
+    const body = rows.map(r=>{
+      const cells = cols.map((c,i) => {
+        const cls = i===0 ? 'team-cell' : (i===1 ? '' : 'dim');
+        return `<td class="${cls}">${esc(r[c[0]]||'—')}</td>`;
+      }).join("");
+      const notes = [r.strengths, r.weaknesses].filter(Boolean).join(" · ");
+      return `<tr>${cells}<td class="notes-cell">${esc(notes || '—')}</td></tr>`;
+    }).join("");
+    return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
   function renderRow(r){
@@ -612,12 +646,10 @@
         <div class="report-detail">
           <dl class="detail-grid">
             <div class="detail-item"><dt>Ground intake</dt><dd>${esc(r.groundIntake||'—')}</dd></div>
-            <div class="detail-item"><dt>Human player loading</dt><dd>${esc(r.humanLoad||'—')}</dd></div>
             <div class="detail-item"><dt>Shooter type</dt><dd>${esc(r.shooterType||'—')}</dd></div>
             <div class="detail-item"><dt>Auto routine</dt><dd>${esc(r.autoType||'—')}</dd></div>
             <div class="detail-item"><dt>Crosses Bump</dt><dd>${esc(r.crossBump||'—')}</dd></div>
             <div class="detail-item"><dt>Crosses Trench</dt><dd>${esc(r.crossTrench||'—')}</dd></div>
-            <div class="detail-item"><dt>Climb mechanism</dt><dd>${esc(r.climbMechanism||'—')}</dd></div>
             <div class="detail-item"><dt>Best climb level</dt><dd>${esc(r.climbLevel||'—')}</dd></div>
             ${r.drivebaseNotes ? `<div class="detail-item detail-full"><dt>Drivebase notes</dt><dd>${esc(r.drivebaseNotes)}</dd></div>` : ''}
             ${r.shooterNotes ? `<div class="detail-item detail-full"><dt>Shooter notes</dt><dd>${esc(r.shooterNotes)}</dd></div>` : ''}
@@ -643,7 +675,7 @@
       bind('f-teamNumber','teamNumber'); bind('f-teamName','teamName'); bind('f-scoutName','scoutName');
       bind('f-eventNotes','eventNotes'); bind('f-drivebaseOther','drivebaseOther'); bind('f-drivebaseNotes','drivebaseNotes');
       bind('f-groundIntakeOther','groundIntakeOther'); bind('f-shooterOther','shooterOther'); bind('f-shooterNotes','shooterNotes');
-      bind('f-autoOther','autoOther'); bind('f-climbMechanismOther','climbMechanismOther');
+
       bind('f-strengths','strengths'); bind('f-weaknesses','weaknesses');
 
       document.querySelectorAll('.radio-pill').forEach(el=>{
@@ -667,6 +699,9 @@
       if(filterEl) filterEl.onchange = ()=>{ state.drivebaseFilter = filterEl.value; render(); };
       const exportBtn = document.getElementById('export-btn');
       if(exportBtn) exportBtn.onclick = exportCSV;
+      document.querySelectorAll('.view-toggle button').forEach(el=>{
+        el.onclick = ()=>{ state.dataView = el.dataset.view; render(); };
+      });
 
       document.querySelectorAll('.report-row').forEach(el=>{
         el.addEventListener('click', (ev)=>{
