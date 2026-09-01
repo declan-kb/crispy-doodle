@@ -24,7 +24,9 @@
     - "Scouting Data" (data)     — every team on the list, scouted or not.
                                     Click a team to fill in or edit its one
                                     scouting record (there's only ever one
-                                    per team — see pit-reports below).
+                                    per team — see pit-reports below). Import
+                                    CSV bulk-restores reports from a file in
+                                    the same format Export CSV produces.
     - "Pick List" (rank)         — the same roster, ranked by EPA (or a
                                     custom drag order) with do-not-pick.
     - "Settings" (settings)      — load the team list from Statbotics, The
@@ -435,6 +437,8 @@
     search: "",
     drivebaseFilter: "All",
     statusFilter: "All",       // "All" | "Not scouted" | "Pre-scouted" | "Scouted at event"
+    importing: false,          // true while an Import CSV file is being read/written
+    importStatus: null,        // {type:"ok"|"err", text} shown after an import finishes
 
     // ---- Scouting Data tab: the one-team scouting form ----
     scoutFormTeam: null,       // team number currently being filled in/edited, or null when showing the list
@@ -732,6 +736,123 @@
     a.click();
     document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }
+
+  // ====================== CSV IMPORT ======================
+  // Parses raw CSV text into an array of rows (each an array of cell
+  // strings), the inverse of csvEscape() above: handles quoted fields,
+  // doubled "" as an escaped literal quote, commas/newlines inside quoted
+  // fields, and both \r\n and \n line endings. A small hand-rolled state
+  // machine rather than a split() one-liner, specifically so a comma or
+  // newline inside a quoted Notes/Impressions cell doesn't break the row.
+  function parseCSV(text){
+    const rows = [];
+    let row = [], field = "", inQuotes = false;
+    for(let i = 0; i < text.length; i++){
+      const c = text[i];
+      if(inQuotes){
+        if(c === '"'){
+          if(text[i+1] === '"'){ field += '"'; i++; } else { inQuotes = false; }
+        } else {
+          field += c;
+        }
+      } else if(c === '"'){
+        inQuotes = true;
+      } else if(c === ','){
+        row.push(field); field = "";
+      } else if(c === '\r'){
+        // ignore — the \n right after it closes the row below
+      } else if(c === '\n'){
+        row.push(field); field = ""; rows.push(row); row = [];
+      } else {
+        field += c;
+      }
+    }
+    if(field.length || row.length){ row.push(field); rows.push(row); }
+    return rows.filter(r => !(r.length === 1 && r[0] === ""));
+  }
+
+  // Imports scouting reports from a CSV file matching the Export CSV
+  // format (header row = FIELDS_META labels) — a round trip for data
+  // collected on paper or in a shared spreadsheet during an event, or for
+  // restoring a previous export. Each valid row overwrites that team's one
+  // report (same doc-id-is-the-team-number scheme saveScoutForm() uses),
+  // and any team number not already on the team list gets added to it too,
+  // so imported teams show up everywhere, not just in Scouting Data.
+  // Column matching is by header text, not position, and unrecognized
+  // extra columns are ignored — so a CSV only needs a "Team #" column and
+  // whichever others it has; missing ones are just left blank/"Unknown"
+  // the same way a fresh report would be.
+  async function importScoutingCSV(file){
+    if(!isConfigured){
+      state.importStatus = {type:"err", text: "Firebase isn't configured yet — see the banner above."};
+      render();
+      return;
+    }
+    state.importing = true; state.importStatus = null; render();
+    try{
+      const text = await file.text();
+      const rows = parseCSV(text);
+      if(!rows.length) throw new Error("The file is empty.");
+
+      const header = rows[0].map(h => h.trim().toLowerCase());
+      const colIndex = {};
+      FIELDS_META.forEach(([key, label]) => {
+        const idx = header.indexOf(label.trim().toLowerCase());
+        if(idx !== -1) colIndex[key] = idx;
+      });
+      if(colIndex.teamNumber === undefined){
+        throw new Error('No "Team #" column found — make sure this is a Scouting Data CSV export.');
+      }
+
+      const get = (r, key) => colIndex[key] !== undefined ? (r[colIndex[key]] || "").trim() : "";
+      let imported = 0, skipped = 0;
+      const newTeams = [];
+      for(const r of rows.slice(1)){
+        const team = get(r, 'teamNumber');
+        if(!/^\d{1,6}$/.test(team)){ skipped++; continue; }
+        const report = {
+          teamNumber: team,
+          teamName: get(r, 'teamName'),
+          scoutName: get(r, 'scoutName'),
+          status: get(r, 'status'),
+          impressions: get(r, 'impressions'),
+          drivebase: get(r, 'drivebase'),
+          drivebaseNotes: get(r, 'drivebaseNotes'),
+          groundIntake: get(r, 'groundIntake'),
+          shooterType: get(r, 'shooterType'),
+          shooterNotes: get(r, 'shooterNotes'),
+          autoType: get(r, 'autoType') || "Unknown",
+          crossBump: get(r, 'crossBump') || "Unknown",
+          crossTrench: get(r, 'crossTrench') || "Unknown",
+          climbLevel: get(r, 'climbLevel') || "Unknown",
+          timestamp: get(r, 'timestamp') || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await fb.setDoc(fb.doc(db, 'pit-reports', team), report);
+        imported++;
+        if(!state.teamList.teams.some(t => t.team === team)){
+          newTeams.push({ team, teamName: report.teamName, qualRank: null });
+        }
+      }
+
+      if(newTeams.length){
+        const teams = state.teamList.teams.concat(newTeams).sort((a,b)=> Number(a.team) - Number(b.team));
+        state.teamList = Object.assign({}, state.teamList, { teams });
+        await saveTeamList({ teams });
+      }
+
+      state.importStatus = {
+        type: "ok",
+        text: `Imported ${imported} report${imported===1?'':'s'}` +
+          (skipped ? `, skipped ${skipped} row${skipped===1?'':'s'} without a valid team number.` : '.') +
+          (newTeams.length ? ` Added ${newTeams.length} new team${newTeams.length===1?'':'s'} to the team list.` : '')
+      };
+    }catch(e){
+      state.importStatus = {type:"err", text: e.message || "Couldn't import that file."};
+    }
+    state.importing = false;
+    render();
   }
 
   // ====================== TEAM LIST ======================
@@ -1101,8 +1222,11 @@
           <option value="Scouted at event" ${state.statusFilter==='Scouted at event'?'selected':''}>Scouted at event</option>
         </select>
         <div class="spacer"></div>
+        <input type="file" id="import-file-input" accept=".csv,text/csv" style="display:none">
+        <button class="btn-secondary" id="import-btn" ${state.importing?'disabled':''}>${state.importing ? 'Importing…' : 'Import CSV'}</button>
         <button class="btn-export" id="export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
       </div>
+      ${state.importStatus ? `<div class="status-msg ${state.importStatus.type}" style="margin-bottom:14px;">${esc(state.importStatus.text)}</div>` : ''}
       <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}</div>
       ${body}
     `;
@@ -1440,6 +1564,15 @@
       if(statusFilterEl) statusFilterEl.onchange = ()=>{ state.statusFilter = statusFilterEl.value; render(); };
       const exportBtn = document.getElementById('export-btn');
       if(exportBtn) exportBtn.onclick = exportCSV;
+
+      const importFileInputEl = document.getElementById('import-file-input');
+      const importBtn = document.getElementById('import-btn');
+      if(importBtn && importFileInputEl) importBtn.onclick = ()=> importFileInputEl.click();
+      if(importFileInputEl) importFileInputEl.onchange = ()=>{
+        const file = importFileInputEl.files && importFileInputEl.files[0];
+        importFileInputEl.value = ""; // reset so picking the same file again still fires change
+        if(file) importScoutingCSV(file);
+      };
 
       document.querySelectorAll('[data-open-scout]').forEach(el=>{
         el.onclick = ()=> openScoutForm(el.dataset.openScout);
