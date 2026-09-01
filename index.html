@@ -874,10 +874,15 @@
           groundIntake: rawGroundIntake,
           shooterType: rawShooterType,
           shooterNotes: rawShooterNotes,
-          autoType: rawAutoType || "Unknown",
-          crossBump: rawCrossBump || "Unknown",
-          crossTrench: rawCrossTrench || "Unknown",
-          climbLevel: rawClimbLevel || "Unknown",
+          // Left blank rather than defaulted to "Unknown" (unlike the
+          // in-app form, which does default these to "Unknown" on save) —
+          // a blank CSV cell means "this field wasn't in the import", not
+          // "we determined the answer is unknown", and the tables already
+          // render an empty value as a plain "—" via `val||'—'`.
+          autoType: rawAutoType,
+          crossBump: rawCrossBump,
+          crossTrench: rawCrossTrench,
+          climbLevel: rawClimbLevel,
           timestamp: get(r, 'timestamp') || new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
