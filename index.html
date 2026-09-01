@@ -38,10 +38,10 @@
       (e.g. doc "6996") — that's what makes "one report per team" a hard
       guarantee rather than an app-level rule to remember.
     - 'settings/team-list' doc (single, fixed): the shared roster, plus
-      Pick List's do-not-pick marks and custom order, plus a cache of each
-      team's Statbotics EPA (see saveTeamEPA below) so it doesn't need
-      re-fetching on every page load — all one document, since there's
-      only ever one team list for the whole app.
+      Pick List's do-not-pick marks, already-picked marks, and custom
+      order, plus a cache of each team's Statbotics EPA (see saveTeamEPA
+      below) so it doesn't need re-fetching on every page load — all one
+      document, since there's only ever one team list for the whole app.
 
   How rendering works: this isn't React. `render()` rebuilds the entire
   #app innerHTML from `state` every time something changes, then
@@ -275,6 +275,12 @@
   .summary-table tbody tr.rank-cutoff td{ border-top:2px solid var(--accent-deep); }
   .summary-table tbody tr.dnp-row{ background:rgba(217,100,92,0.05); }
   .summary-table tbody tr.dnp-row td:not(.dnp-actions){ text-decoration:line-through; opacity:0.45; }
+  /* Already-picked teams — a different tint/no strikethrough from
+     do-not-pick, since "picked" means "off the board, gone" rather than
+     "we don't want this one". A team can be both at once (DNP'd earlier,
+     then picked by someone else); the styles just layer. */
+  .summary-table tbody tr.picked-row{ background:rgba(47,156,152,0.07); }
+  .summary-table tbody tr.picked-row td:not(.dnp-actions){ opacity:0.5; }
   .btn-tiny{
     background:transparent; border:1px solid var(--border-light); color:var(--text-dim);
     font-size:11.5px; font-weight:600; padding:4px 9px; border-radius:3px;
@@ -282,6 +288,8 @@
   .btn-tiny:hover{ color:var(--text); border-color:var(--text-dim); }
   .btn-tiny.active{ background:var(--warn); border-color:var(--warn); color:#2a0f0d; }
   .btn-tiny.active:hover{ background:#e07971; }
+  .btn-tiny.picked-active{ background:var(--steel); border-color:var(--steel); color:#0d181e; }
+  .btn-tiny.picked-active:hover{ background:#6d9cb5; }
 
   .footnote{ font-size:11.5px; color:var(--text-faint); margin-top:22px; line-height:1.5; }
 </style>
@@ -516,6 +524,7 @@
     // ---- Pick List tab: list filters ----
     rankSearch: "",
     rankHideDNP: false,
+    rankHidePicked: false,
 
     // ---- Settings tab: team-list source + roster management ----
     settingsEventCode: readLocal('pitscout_last_event', ''), // event code / list name, informational only
@@ -527,7 +536,7 @@
     settingsSearch: "",
 
     // ---- The one shared team list, synced from the 'settings/team-list' doc ----
-    teamList: { teams: [], doNotPick: {}, order: [], eventLabel: "" },
+    teamList: { teams: [], doNotPick: {}, picked: {}, order: [], eventLabel: "" },
     teamListError: null
   };
 
@@ -979,9 +988,10 @@
   // ====================== TEAM LIST ======================
   // Logic for the one shared team list: load it from Statbotics, TBA, or
   // manual entry (Settings tab), then Scouting Data and Pick List both
-  // just read state.teamList. Pick List's do-not-pick marks and custom
-  // order live in the same doc, since they're scoped to the same one
-  // list. Synced through a single fixed Firestore doc, 'settings/team-list'
+  // just read state.teamList. Pick List's do-not-pick marks, already-
+  // picked marks, and custom order live in the same doc, since they're
+  // scoped to the same one list. Synced through a single fixed Firestore
+  // doc, 'settings/team-list'
   // — see subscribeTeamList/saveTeamList. EPA values are NOT part of that
   // doc; they reuse ensureEPA()/epaCache from the section above.
 
@@ -993,7 +1003,7 @@
     const ref = fb.doc(db, 'settings', 'team-list');
     fb.onSnapshot(ref, (snap)=>{
       const d = snap.exists() ? snap.data() : {};
-      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, order: d.order || [], eventLabel: d.eventLabel || "" };
+      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, picked: d.picked || {}, order: d.order || [], eventLabel: d.eventLabel || "" };
       state.teamListError = null;
       // Hydrate the EPA cache from what's persisted so a normal page load
       // doesn't need to hit Statbotics again — only fills in teams that
@@ -1092,6 +1102,17 @@
     state.teamList = Object.assign({}, state.teamList, { doNotPick: current });
     render();
     saveTeamList({ doNotPick: current });
+  }
+
+  // Toggles a team's "already picked" mark — for alliance selection, once
+  // a team's off the board (picked by anyone, not just us), regardless of
+  // whether it was ever on a do-not-pick list.
+  function togglePicked(team){
+    const current = Object.assign({}, state.teamList.picked);
+    if(current[team]) delete current[team]; else current[team] = true;
+    state.teamList = Object.assign({}, state.teamList, { picked: current });
+    render();
+    saveTeamList({ picked: current });
   }
 
   // Renames one team in the team list (used by Settings' inline name field
@@ -1227,6 +1248,9 @@
     if(state.rankHideDNP){
       teams = teams.filter(t => !state.teamList.doNotPick[t.team]);
     }
+    if(state.rankHidePicked){
+      teams = teams.filter(t => !state.teamList.picked[t.team]);
+    }
     if(state.rankSearch.trim()){
       const q = state.rankSearch.trim().toLowerCase();
       teams = teams.filter(t => {
@@ -1244,7 +1268,7 @@
   function exportPickListCSV(){
     const rows = filteredRankRows();
     if(!rows.length) return;
-    const header = ["Pick #","Team #","Team Name","EPA","Event Quals Rank","Do Not Pick","Status","Drivebase","Shooter","Climb","Notes"];
+    const header = ["Pick #","Team #","Team Name","EPA","Event Quals Rank","Do Not Pick","Already Picked","Status","Drivebase","Shooter","Climb","Notes"];
     const lines = [header.map(csvEscape).join(",")];
     rows.forEach((t,i)=>{
       const rep = reportForTeam(t.team);
@@ -1253,6 +1277,7 @@
       lines.push([
         i < TOP_RANKED_COUNT ? i+1 : "", t.team, (rep && rep.teamName) || t.teamName || "", epa, t.qualRank || "",
         state.teamList.doNotPick[t.team] ? "Yes" : "No",
+        state.teamList.picked[t.team] ? "Yes" : "No",
         rep ? rep.status : "Not scouted",
         rep ? (rep.drivebase||"") : "",
         rep ? (rep.shooterType||"") : "",
@@ -1497,6 +1522,7 @@
     state.teamList.teams.forEach(t => ensureEPA(t.team));
     const totalTeams = state.teamList.teams.length;
     const dnpCount = Object.keys(state.teamList.doNotPick||{}).filter(k => state.teamList.doNotPick[k]).length;
+    const pickedCount = Object.keys(state.teamList.picked||{}).filter(k => state.teamList.picked[k]).length;
     const errorMsg = state.teamListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.teamListError)}</div>` : '';
 
     if(!totalTeams){
@@ -1511,12 +1537,13 @@
       <div class="data-toolbar">
         <input type="text" id="rank-search" placeholder="Search team # or name" value="${esc(state.rankSearch)}">
         <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-dnp" ${state.rankHideDNP?'checked':''}><label for="rank-hide-dnp" style="margin:0;">Hide do-not-pick</label></div>
+        <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-picked" ${state.rankHidePicked?'checked':''}><label for="rank-hide-picked" style="margin:0;">Hide picked</label></div>
         <div class="spacer"></div>
         <button class="btn-secondary" id="refresh-epa-btn" title="EPA is cached — click to re-fetch fresh values from Statbotics for every team">Refresh EPA</button>
         <button class="btn-secondary" id="rank-reset-order-btn">Reset order to EPA</button>
         <button class="btn-export" id="rank-export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
       </div>
-      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}${dnpCount ? ` · <b>${dnpCount}</b> marked do-not-pick` : ''}</div>
+      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}${dnpCount ? ` · <b>${dnpCount}</b> marked do-not-pick` : ''}${pickedCount ? ` · <b>${pickedCount}</b> already picked` : ''}</div>
     `;
 
     const body = rows.length ? renderRankTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search or filter.</p></div>`;
@@ -1532,18 +1559,20 @@
     const body = rows.map((t,i)=>{
       const rep = reportForTeam(t.team);
       const isDNP = !!state.teamList.doNotPick[t.team];
+      const isPicked = !!state.teamList.picked[t.team];
       const name = (rep && rep.teamName) || t.teamName || "—";
       const notes = rep ? rep.impressions : "";
       const scoutedCell = statusTagHtml(rep);
       const rank = i < TOP_RANKED_COUNT ? String(i+1) : '—';
-      const rowClasses = [isDNP ? 'dnp-row' : '', i === TOP_RANKED_COUNT ? 'rank-cutoff' : ''].filter(Boolean).join(' ');
+      const rowClasses = [isDNP ? 'dnp-row' : '', isPicked ? 'picked-row' : '', i === TOP_RANKED_COUNT ? 'rank-cutoff' : ''].filter(Boolean).join(' ');
       return `
         <tr class="${rowClasses}">
           <td class="dnp-actions">
             <div style="display:flex; gap:6px; align-items:center;">
               <button class="btn-tiny" data-move-up="${esc(t.team)}" title="Move up">▲</button>
               <button class="btn-tiny" data-move-down="${esc(t.team)}" title="Move down">▼</button>
-              <button class="btn-tiny ${isDNP?'active':''}" data-toggle-dnp="${esc(t.team)}" title="Toggle do-not-pick">${isDNP?'Unmark':'DNP'}</button>
+              <button class="btn-tiny ${isDNP?'active':''}" data-toggle-dnp="${esc(t.team)}" title="Toggle do-not-pick">${isDNP?'Unmark DNP':'DNP'}</button>
+              <button class="btn-tiny ${isPicked?'picked-active':''}" data-toggle-picked="${esc(t.team)}" title="Toggle already picked">${isPicked?'Unpick':'Picked'}</button>
             </div>
           </td>
           <td class="dim">${rank}</td>
@@ -1706,6 +1735,8 @@
       if(rankSearchEl) rankSearchEl.oninput = ()=>{ state.rankSearch = rankSearchEl.value; render(); };
       const hideDnpEl = document.getElementById('rank-hide-dnp');
       if(hideDnpEl) hideDnpEl.onchange = ()=>{ state.rankHideDNP = hideDnpEl.checked; render(); };
+      const hidePickedEl = document.getElementById('rank-hide-picked');
+      if(hidePickedEl) hidePickedEl.onchange = ()=>{ state.rankHidePicked = hidePickedEl.checked; render(); };
       const resetOrderBtn = document.getElementById('rank-reset-order-btn');
       if(resetOrderBtn) resetOrderBtn.onclick = resetRankOrder;
       const rankExportBtn = document.getElementById('rank-export-btn');
@@ -1716,6 +1747,7 @@
       document.querySelectorAll('[data-move-up]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveUp, -1); });
       document.querySelectorAll('[data-move-down]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveDown, 1); });
       document.querySelectorAll('[data-toggle-dnp]').forEach(el=>{ el.onclick = ()=> toggleDNP(el.dataset.toggleDnp); });
+      document.querySelectorAll('[data-toggle-picked]').forEach(el=>{ el.onclick = ()=> togglePicked(el.dataset.togglePicked); });
       document.querySelectorAll('[data-open-team]').forEach(el=>{
         el.onclick = ()=>{ state.tab = 'data'; openScoutForm(el.dataset.openTeam); };
       });
