@@ -38,8 +38,10 @@
       (e.g. doc "6996") — that's what makes "one report per team" a hard
       guarantee rather than an app-level rule to remember.
     - 'settings/team-list' doc (single, fixed): the shared roster, plus
-      Pick List's do-not-pick marks and custom order — all one document,
-      since there's only ever one team list for the whole app.
+      Pick List's do-not-pick marks and custom order, plus a cache of each
+      team's Statbotics EPA (see saveTeamEPA below) so it doesn't need
+      re-fetching on every page load — all one document, since there's
+      only ever one team list for the whole app.
 
   How rendering works: this isn't React. `render()` rebuilds the entire
   #app innerHTML from `state` every time something changes, then
@@ -373,18 +375,23 @@
 
   // ====================== STATBOTICS EPA LOOKUP ======================
   // Pulls each team's EPA (a competitive-strength rating) from Statbotics'
-  // free public API, purely for reference in the Pick List tab — it's
-  // never saved on a report, since EPA shifts as the season goes.
-  // epaCache lives outside `state` since it's a side-channel lookup, not
-  // form/report data; keyed by team number, e.g.
-  //   { "254": {status:"ok", epa:51.7, percentile:0.997} }
+  // free public API, for reference in the Pick List tab. epaCache lives
+  // outside `state` since it's a side-channel lookup, not form/report
+  // data; keyed by team number, e.g. { "254": {status:"ok", epa:51.7,
+  // percentile:0.997} }. A successful fetch is also persisted into the
+  // team-list doc's `epa` field (see ensureEPA/saveTeamEPA below and the
+  // hydration in subscribeTeamList), so it doesn't need to be re-fetched
+  // from Statbotics on every page load — only for a team that's never
+  // been successfully fetched by anyone, or after "Refresh EPA".
   const EPA_YEAR = 2026;
   let epaCache = {};
 
   // Kicks off a fetch for a team's EPA if one isn't already in flight or
   // cached, then re-renders once it resolves. Safe to call on every render
   // (renderRankTable does, for whatever teams are on screen) — it's a
-  // no-op once a team's entry exists in epaCache, loading or not.
+  // no-op once a team's entry exists in epaCache, loading or not (that
+  // includes entries hydrated from Firestore at startup, so a normal page
+  // load doesn't hit Statbotics at all for teams already cached there).
   function ensureEPA(teamNumber){
     const team = (teamNumber||"").trim();
     if(!team || epaCache[team]) return;
@@ -392,14 +399,35 @@
     fetch(`https://api.statbotics.io/v3/team_year/${encodeURIComponent(team)}/${EPA_YEAR}`)
       .then(res => { if(!res.ok) throw new Error("not found"); return res.json(); })
       .then(data => {
-        epaCache[team] = {
+        const entry = {
           status: "ok",
           epa: data && data.epa ? data.epa.total_points : null,
           percentile: data && data.epa && data.epa.ranks ? data.epa.ranks.total.percentile : null
         };
+        epaCache[team] = entry;
         render();
+        if(entry.epa != null) saveTeamEPA(team, { epa: entry.epa, percentile: entry.percentile });
       })
       .catch(()=>{ epaCache[team] = { status: "error" }; render(); });
+  }
+
+  // Writes one team's freshly-fetched EPA into the team-list doc's `epa`
+  // map, keyed by team number. Uses updateDoc with a dotted field path
+  // (`epa.<team>`) rather than saveTeamList()'s setDoc/mergeFields, since
+  // many teams' fetches can resolve around the same time on a fresh Pick
+  // List load — a dotted path patches just that one team's entry without
+  // racing (or clobbering, the way replacing the whole `epa` field would)
+  // other teams' concurrently-landing writes. Non-fatal on failure: EPA
+  // just won't be cached for next time, Pick List still works fine off
+  // the in-memory fetch either way.
+  async function saveTeamEPA(team, entry){
+    if(!isConfigured) return;
+    try{
+      const ref = fb.doc(db, 'settings', 'team-list');
+      await fb.updateDoc(ref, { ['epa.' + team]: entry, updatedAt: new Date().toISOString() });
+    }catch(e){
+      console.warn('Could not persist EPA for team ' + team, e);
+    }
   }
 
   // Escapes text before it's dropped into an HTML template string, so a
@@ -933,6 +961,14 @@
       const d = snap.exists() ? snap.data() : {};
       state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, order: d.order || [], eventLabel: d.eventLabel || "" };
       state.teamListError = null;
+      // Hydrate the EPA cache from what's persisted so a normal page load
+      // doesn't need to hit Statbotics again — only fills in teams that
+      // don't already have a local entry, so this never clobbers an
+      // in-flight fetch or a fresher result from earlier in this session.
+      const epaData = d.epa || {};
+      Object.keys(epaData).forEach(team => {
+        if(!epaCache[team]) epaCache[team] = { status: "ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
+      });
       render();
     }, (err)=>{
       state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
@@ -1443,7 +1479,7 @@
         <input type="text" id="rank-search" placeholder="Search team # or name" value="${esc(state.rankSearch)}">
         <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-dnp" ${state.rankHideDNP?'checked':''}><label for="rank-hide-dnp" style="margin:0;">Hide do-not-pick</label></div>
         <div class="spacer"></div>
-        <button class="btn-secondary" id="refresh-epa-btn" title="Re-fetch EPA from Statbotics for every team">Refresh EPA</button>
+        <button class="btn-secondary" id="refresh-epa-btn" title="EPA is cached — click to re-fetch fresh values from Statbotics for every team">Refresh EPA</button>
         <button class="btn-secondary" id="rank-reset-order-btn">Reset order to EPA</button>
         <button class="btn-export" id="rank-export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
       </div>
