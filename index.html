@@ -373,7 +373,7 @@
   // (see exportCSV() below). If you add a brand-new field to the form, add
   // it here too or it won't show up in the CSV export.
   const FIELDS_META = [
-    ["teamNumber","Team #"], ["teamName","Team Name"], ["scoutName","Scout"],
+    ["teamNumber","Team #"], ["teamName","Team Name"],
     ["status","Scout Status"], ["impressions","Scout Impressions"],
     ["drivebase","Drivebase"], ["drivebaseNotes","Drivebase Notes"],
     ["groundIntake","Ground Intake"],
@@ -525,7 +525,7 @@
     const listed = state.teamList.teams.find(t => t.team === team);
     return {
       teamName: (listed && listed.teamName) || "",
-      scoutName:"", status:"",
+      status:"",
       drivebase:"", drivebaseOther:"", drivebaseNotes:"",
       groundIntake:"", groundIntakeOther:"",
       shooterType:"", shooterOther:"", shooterNotes:"",
@@ -640,7 +640,6 @@
       const autoSplit = splitOther(existing.autoType, AUTO_OPTS);
       state.scoutForm = {
         teamName: existing.teamName || "",
-        scoutName: existing.scoutName || "",
         status: existing.status || "",
         drivebase: drivebaseSplit.base, drivebaseOther: drivebaseSplit.other, drivebaseNotes: existing.drivebaseNotes||"",
         groundIntake: intakeSplit.base, groundIntakeOther: intakeSplit.other,
@@ -669,7 +668,6 @@
   // Required-field check before a team's data can be saved. Add a line
   // here if you want to make another field mandatory.
   function validateScoutForm(f){
-    if(!f.scoutName.trim()) return "Scout name is required.";
     if(!f.status) return "Select whether this team is pre-scouted or scouted at the event.";
     if(!f.drivebase) return "Select a drivebase type.";
     return null;
@@ -699,7 +697,6 @@
     const report = {
       teamNumber: team,
       teamName: teamName,
-      scoutName: f.scoutName.trim(),
       status: f.status,
       drivebase: resolvedValue(f.drivebase, f.drivebaseOther),
       drivebaseNotes: f.drivebaseNotes.trim(),
@@ -886,7 +883,6 @@
         if(!/^\d{1,6}$/.test(team)){ skipped++; continue; }
 
         const teamName = get(r, 'teamName');
-        const rawScoutName = get(r, 'scoutName');
         const rawStatus = get(r, 'status');
         const rawImpressions = get(r, 'impressions');
         const rawDrivebase = get(r, 'drivebase');
@@ -906,7 +902,7 @@
         // unedited would produce). Writing an empty report for it would
         // wrongly flip the team to "scouted" — skip it, but still track
         // the name for the team-list merge below.
-        const hasScoutingData = rawScoutName || rawStatus || rawImpressions || rawDrivebase ||
+        const hasScoutingData = rawStatus || rawImpressions || rawDrivebase ||
           rawDrivebaseNotes || rawGroundIntake || rawShooterType || rawShooterNotes ||
           rawAutoType || rawCrossBump || rawCrossTrench || rawClimbLevel;
         if(!hasScoutingData){
@@ -920,7 +916,6 @@
         const report = {
           teamNumber: team,
           teamName: teamName,
-          scoutName: rawScoutName,
           status: rawStatus,
           impressions: rawImpressions,
           drivebase: rawDrivebase,
@@ -1359,7 +1354,7 @@
     const cols = [
       ["teamNumber","Team #"], ["teamName","Team Name"], ["drivebase","Drivebase"],
       ["groundIntake","Intake"], ["shooterType","Shooter"], ["autoType","Auto"],
-      ["crossBump","Bump"], ["crossTrench","Trench"], ["climbLevel","Climb"], ["scoutName","Scout"]
+      ["crossBump","Bump"], ["crossTrench","Trench"], ["climbLevel","Climb"]
     ];
     const head = `<th>Status</th>` + cols.map(c => `<th>${esc(c[1])}</th>`).join("") + `<th>Notes</th>`;
     const body = rows.map(t=>{
@@ -1405,10 +1400,9 @@
       </div>
       <div class="section-card identity">
         <div class="section-title">Team identity</div>
-        <div class="grid3">
+        <div class="grid2">
           <div class="field"><label>Team number</label><input type="text" value="${esc(team)}" disabled></div>
           <div class="field"><label>Team name</label><input type="text" id="f-teamName" value="${esc(f.teamName)}" placeholder="e.g. Koalafied"></div>
-          <div class="field"><label>Scout name *</label><input type="text" id="f-scoutName" value="${esc(f.scoutName)}" placeholder="Your name"></div>
         </div>
         <div class="field">
           <label>Scout status *</label>
@@ -1640,7 +1634,7 @@
         const el = document.getElementById(id);
         if(el) el.oninput = ()=>{ state.scoutForm[key] = el.value; };
       };
-      bind('f-teamName','teamName'); bind('f-scoutName','scoutName');
+      bind('f-teamName','teamName');
       bind('f-drivebaseOther','drivebaseOther'); bind('f-drivebaseNotes','drivebaseNotes');
       bind('f-groundIntakeOther','groundIntakeOther'); bind('f-shooterOther','shooterOther'); bind('f-shooterNotes','shooterNotes');
       bind('f-autoTypeOther','autoTypeOther');
