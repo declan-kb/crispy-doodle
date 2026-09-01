@@ -14,9 +14,17 @@
                      - app state
                      - Firestore read/write functions
                      - CSV export
+                     - rank teams / pick list logic (event lookup + do-not-pick)
                      - render functions (build HTML strings from state)
                      - attachHandlers (wires up clicks/inputs after each render)
                      - startup calls at the very bottom
+
+  Three top-level tabs: "New Report" (submit), "Scouting Data" (data), and
+  "Pick List" (rank) — pulls an event's team roster from Statbotics or The
+  Blue Alliance (or manual entry), lines each team up against its scouting
+  report, and lets scouts reorder/cross out picks. The roster, order, and
+  do-not-pick marks all live in their own Firestore collection
+  ('pick-lists', one doc per event code) so they sync live too.
 
   How rendering works: this isn't React. `render()` rebuilds the entire
   #app innerHTML from `state` every time something changes, then
@@ -279,6 +287,17 @@
 
   .loading-note{ font-size:13px; color:var(--text-faint); padding: 40px 0; text-align:center; }
 
+  /* ---------- Pick List tab: do-not-pick styling + tiny action buttons ---------- */
+  .summary-table tbody tr.dnp-row{ background:rgba(217,100,92,0.05); }
+  .summary-table tbody tr.dnp-row td:not(.dnp-actions){ text-decoration:line-through; opacity:0.45; }
+  .btn-tiny{
+    background:transparent; border:1px solid var(--border-light); color:var(--text-dim);
+    font-size:11.5px; font-weight:600; padding:4px 9px; border-radius:3px;
+  }
+  .btn-tiny:hover{ color:var(--text); border-color:var(--text-dim); }
+  .btn-tiny.active{ background:var(--warn); border-color:var(--warn); color:#2a0f0d; }
+  .btn-tiny.active:hover{ background:#e07971; }
+
   .footnote{ font-size:11.5px; color:var(--text-faint); margin-top:22px; line-height:1.5; }
 </style>
 </head>
@@ -312,10 +331,15 @@
   //          match /pit-reports/{report} {
   //            allow read, write: if true;
   //          }
+  //          match /pick-lists/{event} {
+  //            allow read, write: if true;
+  //          }
   //        }
   //      }
   //    (This keeps the data open to anyone with the app link — fine for an
-  //    internal team tool, but don't put sensitive info in it.)
+  //    internal team tool, but don't put sensitive info in it. The
+  //    'pick-lists' collection is used by the Pick List tab to sync each
+  //    event's roster, do-not-pick marks, and custom pick order.)
   // ==============================================================
   const firebaseConfig = {
     apiKey: "AIzaSyDd-bxsDiripyT3nhuhq0YXYmlH-mEpjUs",
@@ -427,7 +451,20 @@
     openRowId: null,         // id of the currently expanded report in Cards view
     form: freshForm(),       // current values of the New Report form
     editId: null,            // Firestore doc id of the report being edited, or null when submitting a new one
-    editTimestamp: null      // original `timestamp` of the report being edited, preserved across the update
+    editTimestamp: null,     // original `timestamp` of the report being edited, preserved across the update
+
+    // ---- Pick List tab ----
+    rankEventCode: readLocal('pitscout_last_event', ''), // event code / list name, also the pick-list doc id
+    rankSource: "statbotics",  // "statbotics" | "tba" | "manual" — where team rosters come from
+    tbaKey: readLocal('pitscout_tba_key', ''),            // user's own TBA Read API key, kept in localStorage only
+    rankTeams: [],            // [{team, teamName, qualRank}] loaded roster for the current event/list
+    rankLoading: false,
+    rankError: null,
+    rankManualInput: "",      // textarea contents for manual team entry
+    rankSearch: "",
+    rankHideDNP: false,
+    pickList: { doNotPick: {}, order: [] }, // synced from the 'pick-lists' Firestore doc for rankEventCode
+    pickListError: null
   };
 
   // Blank slate for the New Report form — called on load and after a
@@ -453,6 +490,17 @@
   function esc(s){
     return String(s===undefined||s===null?"":s)
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  // Small localStorage wrappers, used to remember the last event code and the
+  // scout's own TBA API key across reloads. Wrapped in try/catch since
+  // localStorage can throw (private browsing, disabled storage, etc) — in
+  // that case we just fall back to not remembering anything.
+  function readLocal(key, fallback){
+    try{ const v = localStorage.getItem(key); return v===null ? fallback : v; }catch(e){ return fallback; }
+  }
+  function writeLocal(key, val){
+    try{ localStorage.setItem(key, val); }catch(e){ /* ignore */ }
   }
 
   // ====================== FIRESTORE SYNC ======================
@@ -663,6 +711,292 @@
     return rows;
   }
 
+  // ====================== PICK LIST ======================
+  // Logic for the "Pick List" tab: load an event's team roster (Statbotics,
+  // TBA, or typed in manually), line each team up against its scouting
+  // report (via reportForTeam), and let scouts reorder/cross out teams to
+  // build a pick list. The roster itself, plus do-not-pick marks and custom
+  // order, are all synced through one small Firestore doc per event —
+  // collection 'pick-lists', see subscribePickList/savePickList — so a
+  // loaded roster survives a page refresh (or a teammate's device) without
+  // re-fetching from Statbotics/TBA or retyping a manual list. EPA values
+  // are NOT part of that doc; they reuse ensureEPA()/epaCache from the
+  // Statbotics EPA lookup section above, same as the Scouting Data tab.
+
+  // Turns a free-typed event code / list name into a safe Firestore doc id.
+  function pickListDocId(code){
+    const slug = (code||"").trim().toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'');
+    return slug || 'untitled';
+  }
+
+  // Unsubscribe handle for the currently-active pick-list listener, so
+  // switching event codes doesn't leave old listeners running.
+  let pickListUnsub = null;
+
+  // (Re)subscribes to the pick-list doc for `code`, replacing any previous
+  // subscription. Resets state.pickList (and the on-screen roster) to empty
+  // immediately so stale data from a previous event doesn't linger on
+  // screen while the new doc loads (or if Firebase isn't configured at
+  // all) — the snapshot below repopulates state.rankTeams from the doc's
+  // cached `teams` field, which is what lets a loaded roster survive a
+  // page refresh instead of needing Load teams/Add teams clicked again.
+  function subscribePickList(code){
+    if(pickListUnsub){ pickListUnsub(); pickListUnsub = null; }
+    state.pickList = { doNotPick: {}, order: [] };
+    state.pickListError = null;
+    if(!isConfigured || !code) return;
+    const ref = fb.doc(db, 'pick-lists', pickListDocId(code));
+    pickListUnsub = fb.onSnapshot(ref, (snap)=>{
+      const d = snap.exists() ? snap.data() : {};
+      state.pickList = { doNotPick: d.doNotPick || {}, order: d.order || [] };
+      state.rankTeams = d.teams || [];
+      render();
+    }, (err)=>{
+      state.pickListError = "Couldn't sync the pick list (check Firestore rules for the 'pick-lists' collection).";
+      render();
+    });
+  }
+
+  // Writes a partial update (e.g. {teams: [...]}, {order: [...]}, or
+  // {doNotPick: {...}}) to the current event's pick-list doc. The
+  // onSnapshot listener above will pick the change back up and re-render —
+  // this function doesn't touch state.pickList/state.rankTeams itself,
+  // callers update those optimistically first.
+  async function savePickList(patch){
+    if(!isConfigured) return;
+    const code = state.rankEventCode.trim();
+    if(!code) return;
+    try{
+      const ref = fb.doc(db, 'pick-lists', pickListDocId(code));
+      const data = Object.assign({ eventCode: code, updatedAt: new Date().toISOString() }, patch);
+      // mergeFields (rather than a plain {merge: true}) makes each patched
+      // top-level field a full replacement instead of a recursive object
+      // merge. That distinction matters for doNotPick: {merge: true} only
+      // adds/overwrites keys that are present in the patch and silently
+      // leaves any key that's simply absent — so unmarking a team (which
+      // deletes its key locally) would write an update that never actually
+      // removes it server-side, and the listener would flip the row right
+      // back to marked. mergeFields replaces the whole doNotPick map with
+      // exactly what we send, so a deleted key actually stays deleted.
+      await fb.setDoc(ref, data, { mergeFields: Object.keys(data) });
+    }catch(e){
+      state.pickListError = "Couldn't save the pick list — check your connection and Firestore rules.";
+      render();
+    }
+  }
+
+  // Finds the most recent scouting report for a team (state.reports is
+  // already newest-first), or undefined if nobody's scouted that team yet.
+  function reportForTeam(team){
+    return state.reports.find(r => (r.teamNumber||"").trim() === team);
+  }
+
+  // Sort comparator used for the default (non-custom) pick order: highest
+  // EPA first, teams with no EPA yet/at all pushed to the end, tie-broken by
+  // team number. Reads whatever's currently in epaCache — doesn't fetch.
+  function epaSortCompare(a, b){
+    const ea = epaCache[a] && epaCache[a].status === 'ok' && epaCache[a].epa != null ? epaCache[a].epa : null;
+    const eb = epaCache[b] && epaCache[b].status === 'ok' && epaCache[b].epa != null ? epaCache[b].epa : null;
+    if(ea != null && eb != null) return eb - ea;
+    if(ea != null) return -1;
+    if(eb != null) return 1;
+    return Number(a) - Number(b);
+  }
+
+  // Computes the display order (array of team-number strings) for the
+  // loaded roster: state.pickList.order if a custom order has been saved
+  // (with any newly-loaded teams it doesn't know about yet appended, sorted
+  // by EPA), otherwise a plain EPA-descending sort. This is recomputed on
+  // every render rather than cached, so it stays live as EPA fetches land.
+  function displayRankOrder(){
+    const teamKeys = state.rankTeams.map(t => t.team);
+    if(state.pickList.order && state.pickList.order.length){
+      const known = new Set(teamKeys);
+      const kept = state.pickList.order.filter(t => known.has(t));
+      const extra = teamKeys.filter(t => !kept.includes(t)).sort(epaSortCompare);
+      return kept.concat(extra);
+    }
+    return teamKeys.slice().sort(epaSortCompare);
+  }
+
+  // Swaps a team with its neighbor in the pick order and persists the
+  // result as the new custom order. The first move on a fresh event
+  // "materializes" the current EPA-sorted order into state.pickList.order
+  // so later moves are relative to a stable list instead of re-deriving.
+  function moveTeam(team, dir){
+    const order = displayRankOrder();
+    const idx = order.indexOf(team);
+    const swapIdx = idx + dir;
+    if(idx < 0 || swapIdx < 0 || swapIdx >= order.length) return;
+    const newOrder = order.slice();
+    const tmp = newOrder[idx]; newOrder[idx] = newOrder[swapIdx]; newOrder[swapIdx] = tmp;
+    state.pickList = Object.assign({}, state.pickList, { order: newOrder });
+    render();
+    savePickList({ order: newOrder });
+  }
+
+  // Drops any custom order, reverting the list to a plain EPA sort.
+  function resetRankOrder(){
+    state.pickList = Object.assign({}, state.pickList, { order: [] });
+    render();
+    savePickList({ order: [] });
+  }
+
+  // Toggles a team's "do not pick" mark.
+  function toggleDNP(team){
+    const current = Object.assign({}, state.pickList.doNotPick);
+    if(current[team]) delete current[team]; else current[team] = true;
+    state.pickList = Object.assign({}, state.pickList, { doNotPick: current });
+    render();
+    savePickList({ doNotPick: current });
+  }
+
+  // Fetches an event's team roster from Statbotics or TBA and loads it into
+  // state.rankTeams, then (re)subscribes the pick list for that event code.
+  // Statbotics needs no API key and also hands back each team's quals rank;
+  // TBA needs the scout's own Read API key (useful for off-season events
+  // Statbotics hasn't indexed) and doesn't expose a pre-event rank.
+  async function loadRankTeams(){
+    const code = state.rankEventCode.trim();
+    if(!code){ state.rankError = "Enter an event code."; render(); return; }
+    state.rankLoading = true; state.rankError = null; render();
+    try{
+      let teams = [];
+      if(state.rankSource === 'statbotics'){
+        const res = await fetch(`https://api.statbotics.io/v3/team_events?event=${encodeURIComponent(code)}`);
+        if(!res.ok) throw new Error("Event not found on Statbotics.");
+        const data = await res.json();
+        if(!Array.isArray(data) || !data.length) throw new Error("No teams found for that event on Statbotics — try TBA or manual entry.");
+        teams = data.map(d => ({
+          team: String(d.team),
+          teamName: d.team_name || "",
+          qualRank: (d.record && d.record.qual && d.record.qual.rank) || null
+        }));
+      } else if(state.rankSource === 'tba'){
+        if(!state.tbaKey.trim()) throw new Error("Enter your TBA Read API key first (get one free at thebluealliance.com/account).");
+        const res = await fetch(`https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(code)}/teams/simple`, {
+          headers: { 'X-TBA-Auth-Key': state.tbaKey.trim() }
+        });
+        if(!res.ok) throw new Error(res.status === 401 ? "Invalid TBA API key." : "Event not found on TBA — check the event code.");
+        const data = await res.json();
+        if(!Array.isArray(data) || !data.length) throw new Error("No teams found for that event on TBA.");
+        teams = data.map(d => ({ team: String(d.team_number), teamName: d.nickname || "", qualRank: null }));
+      } else {
+        throw new Error("Switch to Manual entry to add teams by hand.");
+      }
+      teams.sort((a,b)=> Number(a.team) - Number(b.team));
+      state.rankTeams = teams;
+      writeLocal('pitscout_last_event', code);
+      // Write the roster to Firestore and wait for it to land *before*
+      // (re)subscribing, so the listener's first snapshot already reflects
+      // this fresh fetch instead of momentarily showing whatever (older,
+      // possibly empty) roster was cached under this event code before.
+      await savePickList({ teams, source: state.rankSource });
+      subscribePickList(code);
+    }catch(e){
+      state.rankError = e.message || "Couldn't load teams.";
+    }
+    state.rankLoading = false;
+    render();
+  }
+
+  // Parses the manual-entry textarea (one team per line/comma, optionally
+  // "1234 Team Name" or "1234: Team Name") and merges it into the current
+  // roster without dropping teams already loaded. Persisted the same way
+  // loadRankTeams() persists a fetched roster, so a manually-typed list
+  // survives a refresh too instead of having to be retyped.
+  async function addManualTeams(){
+    const lines = state.rankManualInput.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+    if(!lines.length) return;
+    const byTeam = {};
+    state.rankTeams.forEach(t => { byTeam[t.team] = t; });
+    lines.forEach(line => {
+      const m = line.match(/^(\d{1,6})\s*[-:]?\s*(.*)$/);
+      if(!m) return;
+      const team = m[1];
+      const name = m[2].trim() || (byTeam[team] ? byTeam[team].teamName : "");
+      byTeam[team] = { team, teamName: name, qualRank: byTeam[team] ? byTeam[team].qualRank : null };
+    });
+    state.rankTeams = Object.values(byTeam).sort((a,b)=> Number(a.team) - Number(b.team));
+    state.rankManualInput = "";
+    state.rankError = null;
+    const code = state.rankEventCode.trim();
+    if(code){
+      writeLocal('pitscout_last_event', code);
+      await savePickList({ teams: state.rankTeams, source: 'manual' });
+      subscribePickList(code);
+    }
+    render();
+  }
+
+  // Clears the loaded roster — both on screen and from the saved pick-list
+  // doc, so the clear itself survives a refresh too instead of the old
+  // roster silently reappearing. Do-not-pick marks and custom order are
+  // left alone (harmless leftovers if the same teams get loaded again).
+  // No confirm() dialog here on purpose: it's easily undone by reloading
+  // the same event code, and window.confirm() silently no-ops in some
+  // standalone/home-screen-PWA contexts, which made this button look
+  // broken when phones had the app added to their home screen — the guard
+  // was tripping every time with no dialog ever shown.
+  function clearRankList(){
+    state.rankTeams = [];
+    render();
+    savePickList({ teams: [] });
+  }
+
+  // Applies the rank-tab search box + "hide do-not-pick" toggle on top of
+  // displayRankOrder(). Used by both renderRankTable() and exportPickListCSV().
+  function filteredRankRows(){
+    const order = displayRankOrder();
+    let teams = order.map(team => state.rankTeams.find(t => t.team === team)).filter(Boolean);
+    if(state.rankHideDNP){
+      teams = teams.filter(t => !state.pickList.doNotPick[t.team]);
+    }
+    if(state.rankSearch.trim()){
+      const q = state.rankSearch.trim().toLowerCase();
+      teams = teams.filter(t => {
+        const rep = reportForTeam(t.team);
+        return t.team.toLowerCase().includes(q) ||
+          (t.teamName||"").toLowerCase().includes(q) ||
+          (rep && (rep.teamName||"").toLowerCase().includes(q));
+      });
+    }
+    return teams;
+  }
+
+  // Downloads the currently filtered pick list as a CSV — rank position,
+  // team info, EPA, scouting highlights, and do-not-pick status.
+  function exportPickListCSV(){
+    const rows = filteredRankRows();
+    if(!rows.length) return;
+    const header = ["Pick #","Team #","Team Name","EPA","Event Quals Rank","Do Not Pick","Scouted","Drivebase","Shooter","Climb","Notes"];
+    const lines = [header.map(csvEscape).join(",")];
+    rows.forEach((t,i)=>{
+      const rep = reportForTeam(t.team);
+      const epaEntry = epaCache[t.team];
+      const epa = epaEntry && epaEntry.status === 'ok' && epaEntry.epa != null ? epaEntry.epa.toFixed(1) : "";
+      lines.push([
+        i+1, t.team, (rep && rep.teamName) || t.teamName || "", epa, t.qualRank || "",
+        state.pickList.doNotPick[t.team] ? "Yes" : "No",
+        rep ? "Yes" : "No",
+        rep ? (rep.drivebase||"") : "",
+        rep ? (rep.shooterType||"") : "",
+        rep ? (rep.climbLevel||"") : "",
+        rep ? (rep.impressions||"") : ""
+      ].map(csvEscape).join(","));
+    });
+    const csv = lines.join("\r\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pick_list_${pickListDocId(state.rankEventCode)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }
+
   // Renders one row of pill buttons for a single-select field (e.g.
   // drivebase, shooter type). `name` must match a key in state.form.
   // Clicking a pill toggles it via attachHandlers' .radio-pill handler,
@@ -691,11 +1025,12 @@
           <div class="tabs">
             <button class="tab-btn ${state.tab==='submit'?'active':''}" data-tab="submit">New Report</button>
             <button class="tab-btn ${state.tab==='data'?'active':''}" data-tab="data">Scouting Data (${state.reports.length})</button>
+            <button class="tab-btn ${state.tab==='rank'?'active':''}" data-tab="rank">Pick List${state.rankTeams.length ? ' ('+state.rankTeams.length+')' : ''}</button>
           </div>
         </div>
       </div>
       <div class="wrap">
-        ${!state.loaded ? `<div class="loading-note">Loading scouting data…</div>` : (state.tab==='submit' ? renderSubmit() : renderData())}
+        ${!state.loaded ? `<div class="loading-note">Loading scouting data…</div>` : (state.tab==='submit' ? renderSubmit() : state.tab==='data' ? renderData() : renderRank())}
         <div class="footnote">Reports sync live to everyone using this app — teammates scouting other teams will see new submissions appear automatically, and can export the same data.</div>
       </div>
     `;
@@ -922,6 +1257,100 @@
     `;
   }
 
+  // Builds the "Pick List" tab: the event-lookup toolbar (event code,
+  // source picker, TBA key / manual-entry box), then — once a roster is
+  // loaded — a search/filter toolbar and the pick-list table itself.
+  function renderRank(){
+    state.rankTeams.forEach(t => ensureEPA(t.team));
+    const totalTeams = state.rankTeams.length;
+    const dnpCount = Object.keys(state.pickList.doNotPick||{}).filter(k => state.pickList.doNotPick[k]).length;
+
+    const lookupToolbar = `
+      <div class="data-toolbar">
+        <input type="text" id="rank-event-code" placeholder="Event code, e.g. 2026casf" value="${esc(state.rankEventCode)}" style="max-width:220px;">
+        <select id="rank-source">
+          <option value="statbotics" ${state.rankSource==='statbotics'?'selected':''}>Statbotics (no key needed)</option>
+          <option value="tba" ${state.rankSource==='tba'?'selected':''}>The Blue Alliance</option>
+          <option value="manual" ${state.rankSource==='manual'?'selected':''}>Manual entry</option>
+        </select>
+        ${state.rankSource==='tba' ? `<input type="text" id="rank-tba-key" placeholder="TBA Read API Key" value="${esc(state.tbaKey)}" style="max-width:220px;">` : ''}
+        ${state.rankSource!=='manual' ? `<button class="btn-secondary" id="rank-load-btn" ${state.rankLoading?'disabled':''}>${state.rankLoading ? 'Loading…' : 'Load teams'}</button>` : ''}
+        ${totalTeams ? `<button class="btn-secondary" id="rank-clear-btn">Clear list</button>` : ''}
+      </div>
+      ${state.rankSource==='manual' ? `
+      <div class="field" style="max-width:520px; margin-bottom:16px;">
+        <label>Add teams — one per line, "1234" or "1234 Team Name"</label>
+        <textarea id="rank-manual-input" placeholder="254 Cheesy Poofs&#10;6996 Koalafied">${esc(state.rankManualInput)}</textarea>
+        <div style="margin-top:8px;"><button class="btn-secondary" id="rank-manual-add-btn">Add teams</button></div>
+      </div>` : ''}
+      ${state.rankError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.rankError)}</div>` : ''}
+      ${state.pickListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.pickListError)}</div>` : ''}
+      ${!isConfigured ? `<div class="status-msg err" style="margin-bottom:14px;">Firebase isn't configured — do-not-pick marks and custom order won't be saved or shared.</div>` : ''}
+    `;
+
+    if(!totalTeams){
+      return lookupToolbar + `
+        <div class="empty-state">
+          <h3>No teams loaded</h3>
+          <p>Enter an event code and load teams from Statbotics or TBA, or switch to Manual entry above.</p>
+        </div>`;
+    }
+
+    const rows = filteredRankRows();
+    const filterToolbar = `
+      <div class="data-toolbar">
+        <input type="text" id="rank-search" placeholder="Search team # or name" value="${esc(state.rankSearch)}">
+        <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-dnp" ${state.rankHideDNP?'checked':''}><label for="rank-hide-dnp" style="margin:0;">Hide do-not-pick</label></div>
+        <div class="spacer"></div>
+        <button class="btn-secondary" id="rank-reset-order-btn">Reset order to EPA</button>
+        <button class="btn-export" id="rank-export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
+      </div>
+      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}${dnpCount ? ` · <b>${dnpCount}</b> marked do-not-pick` : ''}</div>
+    `;
+
+    const body = rows.length ? renderRankTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search or filter.</p></div>`;
+    return lookupToolbar + filterToolbar + body;
+  }
+
+  // Table for the Pick List tab: per-row actions (reorder + do-not-pick
+  // toggle) lead on the left so they're reachable without scrolling the
+  // table sideways, then rank position, team info, EPA, quals rank
+  // (Statbotics only), whether the team's been scouted, a few key scouting
+  // fields, and notes.
+  function renderRankTable(rows){
+    const head = `<th>Actions</th><th>#</th><th>Team #</th><th>Team Name</th><th title="Statbotics ${EPA_YEAR} EPA">EPA</th><th title="Qualification-match rank at the event (Statbotics only)">Quals Rank</th><th>Scouted</th><th>Drivebase</th><th>Shooter</th><th>Climb</th><th>Notes</th>`;
+    const body = rows.map((t,i)=>{
+      const rep = reportForTeam(t.team);
+      const isDNP = !!state.pickList.doNotPick[t.team];
+      const name = (rep && rep.teamName) || t.teamName || "—";
+      const notes = rep ? (rep.impressions || [rep.strengths, rep.weaknesses].filter(Boolean).join(" · ")) : "";
+      const scoutedCell = rep
+        ? `<span class="tag ${rep.preScouting==='Yes'?'prescouted':''}">${rep.preScouting==='Yes'?'Pre-scouted':'Scouted'}</span>`
+        : `<span class="tag" style="opacity:0.55;">Not scouted</span>`;
+      return `
+        <tr class="${isDNP?'dnp-row':''}">
+          <td class="dnp-actions">
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button class="btn-tiny" data-move-up="${esc(t.team)}" title="Move up">▲</button>
+              <button class="btn-tiny" data-move-down="${esc(t.team)}" title="Move down">▼</button>
+              <button class="btn-tiny ${isDNP?'active':''}" data-toggle-dnp="${esc(t.team)}" title="Toggle do-not-pick">${isDNP?'Unmark':'DNP'}</button>
+            </div>
+          </td>
+          <td class="dim">${i+1}</td>
+          <td class="team-cell" style="cursor:pointer;" data-open-team="${esc(t.team)}" title="View this team's scouting report">${esc(t.team)}</td>
+          <td>${esc(name)}</td>
+          <td class="dim">${epaCellHtml(t.team)}</td>
+          <td class="dim">${t.qualRank ? '#'+t.qualRank : '—'}</td>
+          <td>${scoutedCell}</td>
+          <td class="dim">${esc(rep ? (rep.drivebase||'—') : '—')}</td>
+          <td class="dim">${esc(rep ? (rep.shooterType||'—') : '—')}</td>
+          <td class="dim">${esc(rep ? (rep.climbLevel||'—') : '—')}</td>
+          <td class="notes-cell">${esc(notes || '—')}</td>
+        </tr>`;
+    }).join("");
+    return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
   // ====================== EVENT HANDLERS ======================
   // Since render() rebuilds the DOM from scratch every time, any listeners
   // attached to the old elements are gone — this function re-attaches them
@@ -1011,6 +1440,44 @@
         };
       });
     }
+
+    if(state.tab==='rank'){
+      const eventCodeEl = document.getElementById('rank-event-code');
+      if(eventCodeEl) eventCodeEl.oninput = ()=>{ state.rankEventCode = eventCodeEl.value; };
+      const sourceEl = document.getElementById('rank-source');
+      if(sourceEl) sourceEl.onchange = ()=>{ state.rankSource = sourceEl.value; state.rankError = null; render(); };
+      const tbaKeyEl = document.getElementById('rank-tba-key');
+      if(tbaKeyEl) tbaKeyEl.oninput = ()=>{ state.tbaKey = tbaKeyEl.value; writeLocal('pitscout_tba_key', tbaKeyEl.value); };
+      const loadBtn = document.getElementById('rank-load-btn');
+      if(loadBtn) loadBtn.onclick = loadRankTeams;
+      const clearBtn = document.getElementById('rank-clear-btn');
+      if(clearBtn) clearBtn.onclick = clearRankList;
+      const manualInputEl = document.getElementById('rank-manual-input');
+      if(manualInputEl) manualInputEl.oninput = ()=>{ state.rankManualInput = manualInputEl.value; };
+      const manualAddBtn = document.getElementById('rank-manual-add-btn');
+      if(manualAddBtn) manualAddBtn.onclick = addManualTeams;
+
+      const rankSearchEl = document.getElementById('rank-search');
+      if(rankSearchEl) rankSearchEl.oninput = ()=>{ state.rankSearch = rankSearchEl.value; render(); };
+      const hideDnpEl = document.getElementById('rank-hide-dnp');
+      if(hideDnpEl) hideDnpEl.onchange = ()=>{ state.rankHideDNP = hideDnpEl.checked; render(); };
+      const resetOrderBtn = document.getElementById('rank-reset-order-btn');
+      if(resetOrderBtn) resetOrderBtn.onclick = resetRankOrder;
+      const rankExportBtn = document.getElementById('rank-export-btn');
+      if(rankExportBtn) rankExportBtn.onclick = exportPickListCSV;
+
+      document.querySelectorAll('[data-move-up]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveUp, -1); });
+      document.querySelectorAll('[data-move-down]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveDown, 1); });
+      document.querySelectorAll('[data-toggle-dnp]').forEach(el=>{ el.onclick = ()=> toggleDNP(el.dataset.toggleDnp); });
+      document.querySelectorAll('[data-open-team]').forEach(el=>{
+        el.onclick = ()=>{
+          state.tab = 'data';
+          state.search = el.dataset.openTeam;
+          state.dataView = 'cards';
+          render();
+        };
+      });
+    }
   }
 
   // ====================== STARTUP ======================
@@ -1019,6 +1486,12 @@
   // (or immediately, with an empty list, if Firebase isn't configured).
   render();
   startListening();
+  // If a Pick List event code was remembered from last time (see
+  // readLocal('pitscout_last_event', ...) in the initial state above),
+  // subscribe to its pick-list doc right away so the loaded roster,
+  // do-not-pick marks, and custom order are all back on screen without
+  // needing Load teams clicked again — i.e. so a refresh doesn't lose them.
+  if(state.rankEventCode.trim()) subscribePickList(state.rankEventCode.trim());
 </script>
 </body>
 </html>
