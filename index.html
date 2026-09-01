@@ -363,7 +363,7 @@
   // show up in the CSV export.
   const FIELDS_META = [
     ["teamNumber","Team #"], ["teamName","Team Name"], ["scoutName","Scout"],
-    ["eventNotes","Event / Context"], ["preScouting","Pre-scouting"],
+    ["eventNotes","Event"], ["preScouting","Pre-scouting"],
     ["drivebase","Drivebase"], ["drivebaseNotes","Drivebase Notes"],
     ["groundIntake","Ground Intake"],
     ["shooterType","Shooter Type"], ["shooterNotes","Shooter Notes"],
@@ -653,7 +653,6 @@
           <div class="brand">
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
-            <div class="brand-sub">FRC 6996 Koalafied — 2026 qualitative pit scouting</div>
           </div>
           <div class="tabs">
             <button class="tab-btn ${state.tab==='submit'?'active':''}" data-tab="submit">New Report</button>
@@ -690,8 +689,8 @@
           <div class="field"><label>Team name</label><input type="text" id="f-teamName" value="${esc(f.teamName)}" placeholder="e.g. Koalafied"></div>
           <div class="field"><label>Scout name *</label><input type="text" id="f-scoutName" value="${esc(f.scoutName)}" placeholder="Your name"></div>
         </div>
-        <div class="field"><label>Event / context (optional)</label><input type="text" id="f-eventNotes" value="${esc(f.eventNotes)}" placeholder="e.g. AUSC 2026, MRT 2026"></div>
-        <div class="field checkbox-row"><input type="checkbox" id="f-preScouting" ${f.preScouting?'checked':''}><label for="f-preScouting">Pre-scouting (before the event, e.g. from film or past matches)</label></div>
+        <div class="field"><label>Event</label><input type="text" id="f-eventNotes" value="${esc(f.eventNotes)}" placeholder="e.g. AUSC 2026, MRT 2026"></div>
+        <div class="field checkbox-row"><input type="checkbox" id="f-preScouting" ${f.preScouting?'checked':''}><label for="f-preScouting">Pre-scouting</label></div>
       </div>
 
       <div class="section-card">
