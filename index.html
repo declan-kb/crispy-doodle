@@ -2,869 +2,693 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Picklist Ranker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pit Scout — REBUILT 2026</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
   :root{
-    --bg: #14181f;
-    --panel: #1c222c;
-    --panel-2: #232a36;
-    --line: #333c4a;
-    --ink: #e9edf3;
-    --ink-dim: #8e99ab;
-    --accent: #ff6a2b;
-    --accent-ink: #1a1206;
-    --good: #2ec4b6;
+    --bg: #16171a;
+    --panel: #1e2023;
+    --panel-alt: #24262a;
+    --panel-raised: #2a2c31;
+    --accent: #f4b400;
+    --accent-deep: #b98600;
+    --accent-text: #191300;
+    --steel: #5b87a0;
+    --text: #ecedec;
+    --text-dim: #93969b;
+    --text-faint: #64666b;
+    --border: #313337;
+    --border-light: #3c3e43;
+    --ok: #4caf7d;
+    --warn: #d9645c;
   }
-  *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;}
-  body{
-    background:var(--bg);
-    color:var(--ink);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    min-height:100vh;
-    display:flex;
-    align-items:flex-start;
-    justify-content:center;
-    padding:32px 16px;
-  }
-  .wrap{width:100%;max-width:640px;}
-  .eyebrow{
-    color:var(--ink-dim);
-    font-size:13px;
-    letter-spacing:.02em;
-    margin:0 0 6px;
-  }
-  h1{
-    font-size:28px;
-    margin:0 0 24px;
-    letter-spacing:-.01em;
-    font-weight:700;
-  }
-  .card{
-    background:var(--panel);
-    border:1px solid var(--line);
-    border-radius:14px;
-    padding:28px;
-  }
-  textarea{
+
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:'Inter',system-ui,sans-serif; }
+  #app{ min-height:100vh; padding-bottom: 60px; }
+
+  ::selection{ background:var(--accent); color:var(--accent-text); }
+
+  input, select, textarea{
+    font-family:'Inter',system-ui,sans-serif;
+    background:var(--panel-alt);
+    border:1px solid var(--border-light);
+    color:var(--text);
+    border-radius:3px;
+    padding:9px 10px;
+    font-size:14px;
     width:100%;
-    min-height:120px;
-    background:var(--panel-2);
-    border:1px solid var(--line);
-    border-radius:10px;
-    color:var(--ink);
-    font-size:16px;
-    font-family:inherit;
-    padding:14px;
-    resize:vertical;
   }
-  textarea:focus{outline:2px solid var(--accent);outline-offset:1px;}
-  .hint{color:var(--ink-dim);font-size:13px;margin-top:8px;line-height:1.5;}
-  button{
-    font-family:inherit;
-    cursor:pointer;
-    border:none;
-  }
-  .btn-primary{
-    background:var(--accent);
-    color:var(--accent-ink);
-    font-weight:700;
-    font-size:16px;
-    padding:13px 22px;
-    border-radius:10px;
-    margin-top:18px;
-  }
-  .btn-primary:disabled{opacity:.4;cursor:not-allowed;}
-  .btn-ghost{
-    background:transparent;
-    color:var(--ink-dim);
-    font-size:14px;
-    padding:8px 4px;
-    text-decoration:underline;
-    text-underline-offset:3px;
-  }
-  .btn-ghost:hover{color:var(--ink);}
-  #err{color:#ff8a65;font-size:14px;margin-top:10px;min-height:18px;}
-
-  /* Comparison screen */
-  .progress-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
-  .progress-label{color:var(--ink-dim);font-size:13px;}
-  .progress-track{
-    background:var(--panel-2);
-    border-radius:6px;
-    height:6px;
-    overflow:hidden;
-    margin-top:20px;
-  }
-  .progress-fill{
-    background:var(--good);
-    height:100%;
-    width:0%;
-    transition:width .25s ease;
-  }
-  .vs-row{
-    display:flex;
-    align-items:stretch;
-    gap:14px;
-    margin-top:6px;
-  }
-  .team-btn{
-    flex:1;
-    background:var(--panel-2);
-    border:1px solid var(--line);
-    border-radius:12px;
-    padding:38px 12px;
-    text-align:center;
-    transition:border-color .12s ease, transform .08s ease;
-  }
-  .team-btn:hover{border-color:var(--accent);}
-  .team-btn:active{transform:scale(.98);}
-  .team-num{
-    font-size:44px;
-    font-weight:800;
-    color:var(--ink);
-    letter-spacing:-.01em;
-    font-variant-numeric:tabular-nums;
-  }
-  .team-name{
-    display:block;
-    margin-top:8px;
-    font-size:14px;
-    color:var(--ink-dim);
-    min-height:18px;
-    line-height:1.3;
-  }
-  .team-epa{
-    display:inline-block;
-    margin-top:6px;
-    font-size:12px;
-    color:var(--good);
-    background:rgba(46,196,182,0.12);
-    padding:3px 9px;
-    border-radius:999px;
-    font-variant-numeric:tabular-nums;
-  }
-  .team-epa:empty{ display:none; }
-  .team-pick{
-    display:block;
-    margin-top:10px;
-    font-size:12px;
-    color:var(--ink-dim);
-  }
-  .vs-divider{
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    color:var(--ink-dim);
-    font-size:13px;
-    font-weight:700;
-    width:28px;
-  }
-  .prompt{color:var(--ink-dim);font-size:14px;margin:0 0 4px;}
-  .foot-row{
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    margin-top:20px;
-  }
-
-  /* Results */
-  ol.results{list-style:none;margin:0;padding:0;counter-reset:rank;}
-  ol.results li{
-    counter-increment:rank;
-    display:flex;
-    align-items:center;
-    gap:14px;
-    padding:12px 4px;
-    border-bottom:1px solid var(--line);
-  }
-  ol.results li:last-child{border-bottom:none;}
-  ol.results li::before{
-    content:counter(rank);
-    font-size:13px;
-    color:var(--accent-ink);
-    background:var(--accent);
-    width:26px;
-    height:26px;
-    border-radius:7px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    font-weight:800;
-    flex-shrink:0;
-  }
-  .res-num{
-    font-size:20px;
-    font-weight:700;
-    font-variant-numeric:tabular-nums;
-  }
-  .res-name{
-    font-size:14px;
-    color:var(--ink-dim);
-  }
-  .res-epa{
-    font-size:12px;
-    color:var(--good);
-    background:rgba(46,196,182,0.12);
-    padding:2px 8px;
-    border-radius:999px;
-    font-variant-numeric:tabular-nums;
-    margin-left:auto;
-  }
-  .actions{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;}
-  .btn-secondary{
-    background:var(--panel-2);
-    border:1px solid var(--line);
-    color:var(--ink);
-    font-size:14px;
-    padding:11px 18px;
-    border-radius:10px;
-  }
-  .btn-secondary:hover{border-color:var(--accent);}
-  .copied{color:var(--good);font-size:13px;margin-left:4px;}
-  .hidden{display:none;}
-
-  /* Import options */
-  .import-row{
-    display:flex;
-    gap:8px;
-    margin-top:16px;
-    flex-wrap:wrap;
-  }
-  .tab-btn{
-    background:transparent;
-    border:1px solid var(--line);
-    color:var(--ink-dim);
-    font-size:13px;
-    padding:8px 14px;
-    border-radius:999px;
-  }
-  .tab-btn.active{
+  input:focus, select:focus, textarea:focus{
+    outline:2px solid var(--accent);
+    outline-offset:-1px;
     border-color:var(--accent);
-    color:var(--ink);
   }
-  .tab-btn:hover{color:var(--ink);}
-  .file-label{
-    display:inline-block;
+  textarea{ resize:vertical; min-height:64px; line-height:1.4; }
+  label{ display:block; font-size:12.5px; color:var(--text-dim); margin-bottom:6px; font-weight:500; }
+
+  button{ font-family:'Inter',system-ui,sans-serif; cursor:pointer; border:none; }
+  button:focus-visible, a:focus-visible, [tabindex]:focus-visible{
+    outline:2px solid var(--accent); outline-offset:2px;
   }
-  #file-input{
-    position:absolute;
-    width:1px;height:1px;
-    opacity:0;
-    overflow:hidden;
+
+  /* ---------- Top bar ---------- */
+  .topbar{
+    background: linear-gradient(180deg, #1a1b1e 0%, #17181a 100%);
+    border-bottom: 3px solid var(--accent);
+    padding: 18px 24px 0 24px;
   }
-  .tba-panel{
-    background:var(--panel-2);
-    border:1px solid var(--line);
-    border-radius:10px;
-    padding:16px;
-    margin-top:12px;
+  .topbar-inner{ max-width: 980px; margin:0 auto; }
+  .brand{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .brand-mark{
+    font-family:'Barlow Condensed', sans-serif; font-weight:700; font-size:30px;
+    letter-spacing:0.5px; color:var(--text); line-height:1;
   }
-  .field-row{
-    display:flex;
-    gap:10px;
-    flex-wrap:wrap;
+  .brand-mark span{ color:var(--accent); }
+  .brand-sub{ font-size:13px; color:var(--text-dim); }
+  .tabs{ display:flex; gap:4px; margin-top:16px; }
+  .tab-btn{
+    background:transparent; color:var(--text-dim); font-size:14.5px; font-weight:600;
+    padding:10px 16px; border-radius: 4px 4px 0 0; border-bottom:3px solid transparent;
+    margin-bottom:-3px; transition: color .15s;
   }
-  .field{
-    flex:1;
-    min-width:160px;
+  .tab-btn:hover{ color:var(--text); }
+  .tab-btn.active{ color:var(--text); border-bottom-color:var(--accent); }
+
+  .wrap{ max-width: 980px; margin: 28px auto 0 auto; padding: 0 24px; }
+
+  /* ---------- Cards / sections ---------- */
+  .section-card{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-left: 3px solid var(--steel);
+    border-radius: 4px;
+    padding: 18px 20px 20px 20px;
+    margin-bottom: 18px;
   }
-  .field label{
-    display:block;
-    font-size:12px;
-    color:var(--ink-dim);
-    margin-bottom:6px;
+  .section-card.identity{ border-left-color: var(--accent); }
+  .section-title{
+    font-family:'Barlow Condensed', sans-serif; font-weight:600; font-size:19px;
+    margin: 0 0 3px 0; color: var(--text);
   }
-  .field input{
-    width:100%;
-    background:var(--bg);
-    border:1px solid var(--line);
-    border-radius:8px;
-    color:var(--ink);
-    font-size:15px;
-    font-family:inherit;
-    padding:10px 12px;
+  .section-hint{ font-size:12.5px; color:var(--text-faint); margin: 0 0 14px 0; }
+  .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  .grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px; }
+  .field{ margin-bottom:14px; }
+  .field:last-child{ margin-bottom:0; }
+  @media (max-width: 640px){
+    .grid2, .grid3{ grid-template-columns: 1fr; }
   }
-  .field input:focus{outline:2px solid var(--accent);outline-offset:1px;}
-  .tba-note{color:var(--ink-dim);font-size:12px;margin-top:10px;line-height:1.5;}
-  .tba-note a{color:var(--good);}
-  #tba-status{font-size:13px;margin-top:10px;min-height:16px;}
-  .status-ok{color:var(--good);}
-  .status-err{color:#ff8a65;}
+
+  .radio-row{ display:flex; gap:8px; flex-wrap:wrap; }
+  .radio-pill{
+    background:var(--panel-alt); border:1px solid var(--border-light); color:var(--text-dim);
+    padding:8px 14px; border-radius:20px; font-size:13.5px; font-weight:500;
+    transition: all .12s;
+  }
+  .radio-pill.selected{ background:var(--accent); border-color:var(--accent); color:var(--accent-text); }
+  .radio-pill:hover:not(.selected){ border-color:var(--text-dim); color:var(--text); }
+
+  .other-input{ margin-top:8px; }
+
+  .submit-row{ display:flex; align-items:center; gap:14px; margin-top:6px; }
+  .btn-primary{
+    background:var(--accent); color:var(--accent-text); font-weight:700; font-size:15px;
+    padding:13px 28px; border-radius:4px; letter-spacing:0.2px;
+  }
+  .btn-primary:hover{ background:#ffc72c; }
+  .btn-primary:disabled{ opacity:0.5; cursor:default; }
+  .btn-secondary{
+    background:transparent; color:var(--text-dim); border:1px solid var(--border-light);
+    font-weight:600; font-size:13.5px; padding:9px 16px; border-radius:4px;
+  }
+  .btn-secondary:hover{ color:var(--text); border-color:var(--text-dim); }
+  .status-msg{ font-size:13px; }
+  .status-msg.ok{ color:var(--ok); }
+  .status-msg.err{ color:var(--warn); }
+
+  /* ---------- Data view ---------- */
+  .data-toolbar{
+    display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap;
+  }
+  .data-toolbar input[type=text]{ max-width: 260px; }
+  .data-toolbar select{ max-width: 200px; }
+  .spacer{ flex:1; }
+  .btn-export{
+    background:var(--steel); color:#0d181e; font-weight:700; font-size:13.5px;
+    padding:10px 18px; border-radius:4px;
+  }
+  .btn-export:hover{ background:#6d9cb5; }
+  .btn-export:disabled{ opacity:0.4; cursor:default; }
+
+  .count-strip{ font-size:13px; color:var(--text-faint); margin-bottom:14px; }
+  .count-strip b{ color:var(--text); }
+
+  .report-list{ display:flex; flex-direction:column; gap:10px; }
+  .report-row{
+    background:var(--panel); border:1px solid var(--border); border-radius:4px;
+    padding:14px 16px; cursor:pointer;
+  }
+  .report-row:hover{ border-color: var(--border-light); }
+  .report-row-head{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .team-badge{
+    font-family:'Barlow Condensed', sans-serif; font-weight:700; font-size:22px;
+    color: var(--accent); min-width:60px;
+  }
+  .team-name{ font-weight:600; font-size:15px; flex:1; min-width:120px; }
+  .row-tags{ display:flex; gap:6px; flex-wrap:wrap; }
+  .tag{
+    font-size:11.5px; color:var(--text-dim); background:var(--panel-alt);
+    border:1px solid var(--border-light); padding:3px 9px; border-radius:20px;
+  }
+  .row-meta{ font-size:12px; color:var(--text-faint); margin-top:6px; }
+  .expand-arrow{ color:var(--text-faint); font-size:13px; transition: transform .15s; }
+  .report-row.open .expand-arrow{ transform: rotate(90deg); }
+
+  .report-detail{ margin-top:14px; padding-top:14px; border-top:1px solid var(--border); display:none; }
+  .report-row.open .report-detail{ display:block; }
+  .detail-grid{ display:grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; }
+  @media (max-width:640px){ .detail-grid{ grid-template-columns: 1fr; } }
+  .detail-item dt{ font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:2px; }
+  .detail-item dd{ margin:0; font-size:13.5px; color:var(--text); line-height:1.45; }
+  .detail-item{ margin-bottom:8px; }
+  .detail-full{ grid-column: 1 / -1; }
+  .delete-btn{
+    margin-top:14px; background:transparent; color:var(--warn); border:1px solid #4a2b29;
+    font-size:12.5px; font-weight:600; padding:7px 12px; border-radius:4px;
+  }
+  .delete-btn:hover{ background:rgba(217,100,92,0.1); }
+
+  .empty-state{
+    text-align:center; padding:60px 20px; color:var(--text-faint);
+    border:1px dashed var(--border-light); border-radius:6px;
+  }
+  .empty-state h3{ color:var(--text-dim); font-family:'Barlow Condensed',sans-serif; font-weight:600; font-size:20px; margin:0 0 6px 0;}
+  .empty-state p{ margin:0; font-size:13.5px; }
+
+  .loading-note{ font-size:13px; color:var(--text-faint); padding: 40px 0; text-align:center; }
+
+  .footnote{ font-size:11.5px; color:var(--text-faint); margin-top:22px; line-height:1.5; }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <p class="eyebrow">FRC Scouting</p>
-  <h1>Picklist Ranker</h1>
+<div id="app"></div>
 
-  <!-- SCREEN 1: INPUT -->
-  <div class="card" id="screen-input">
-    <p class="prompt" style="margin-bottom:10px;">Paste in every team number you're ranking. One per line, or separated by commas or spaces.</p>
-    <textarea id="team-input" placeholder="1114&#10;254&#10;2056&#10;5940&#10;..."></textarea>
-    <div class="hint">You'll be shown two teams at a time and pick the one you'd rather have as an alliance partner. The ranker uses those picks to sort the whole list, so you won't need to compare every possible pair.</div>
-
-    <div class="import-row">
-      <label class="file-label tab-btn" for="file-input">Upload a file</label>
-      <input type="file" id="file-input" accept=".csv,.txt">
-      <button class="tab-btn" id="tba-toggle-btn">Import from The Blue Alliance</button>
-      <button class="tab-btn" id="epa-toggle-btn">Add EPA from Statbotics</button>
-    </div>
-
-    <div class="tba-panel hidden" id="epa-panel">
-      <div class="field-row">
-        <div class="field">
-          <label for="epa-event-key">Event key</label>
-          <input type="text" id="epa-event-key" placeholder="e.g. 2026ausc">
-        </div>
-      </div>
-      <button class="btn-secondary" id="epa-fetch-btn" style="margin-top:12px;">Fetch event EPA ranking</button>
-      <div id="epa-status"></div>
-      <div class="tba-note">
-        Pulls every team's EPA (Expected Points Added) at that event from <a href="https://www.statbotics.io" target="_blank" rel="noopener">Statbotics</a> in a single request, then shows it next to matching team names during ranking. Same event key format as the TBA import above. No API key needed.
-      </div>
-    </div>
-
-    <div class="tba-panel hidden" id="tba-panel">
-      <div class="field-row">
-        <div class="field">
-          <label for="tba-event-key">Event key</label>
-          <input type="text" id="tba-event-key" placeholder="e.g. 2026casj">
-        </div>
-        <div class="field">
-          <label for="tba-api-key">Your TBA API key</label>
-          <input type="text" id="tba-api-key" placeholder="Read API key" autocomplete="off">
-        </div>
-      </div>
-      <button class="btn-secondary" id="tba-import-btn" style="margin-top:12px;">Fetch team list</button>
-      <div id="tba-status"></div>
-      <div class="tba-note">
-        Find the event key in a TBA event URL (thebluealliance.com/event/<b>2026casj</b>). Get a free read-only API key from your <a href="https://www.thebluealliance.com/account" target="_blank" rel="noopener">TBA account page</a> — it's only used here in your browser, never sent anywhere else. This pulls the list, but doesn't auto-start, so you can check it over first.
-      </div>
-    </div>
-
-    <div id="err"></div>
-    <button class="btn-primary" id="start-btn">Start ranking</button>
-  </div>
-
-  <!-- SCREEN 2: COMPARISON -->
-  <div class="card hidden" id="screen-compare">
-    <div class="progress-row">
-      <span class="progress-label" id="progress-label">Comparison 1</span>
-      <button class="btn-ghost" id="undo-btn">Undo last pick</button>
-    </div>
-    <p class="prompt">Which team would you rather have as an alliance partner?</p>
-    <div class="vs-row">
-      <button class="team-btn" id="team-a-btn">
-        <span class="team-num" id="team-a-num">0000</span>
-        <span class="team-name" id="team-a-name"></span>
-        <span class="team-epa" id="team-a-epa"></span>
-        <span class="team-pick">tap to pick</span>
-      </button>
-      <div class="vs-divider">VS</div>
-      <button class="team-btn" id="team-b-btn">
-        <span class="team-num" id="team-b-num">0000</span>
-        <span class="team-name" id="team-b-name"></span>
-        <span class="team-epa" id="team-b-epa"></span>
-        <span class="team-pick">tap to pick</span>
-      </button>
-    </div>
-    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
-  </div>
-
-  <!-- SCREEN 3: RESULTS -->
-  <div class="card hidden" id="screen-results">
-    <p class="prompt" style="margin-bottom:14px;">Your picklist, best partner first.</p>
-    <ol class="results" id="results-list"></ol>
-    <div class="actions">
-      <button class="btn-secondary" id="copy-btn">Copy list</button>
-      <button class="btn-secondary" id="restart-btn">Start a new list</button>
-      <span class="copied hidden" id="copied-msg">Copied</span>
-    </div>
+<div id="setup-banner" style="display:none; max-width:980px; margin:24px auto 0 auto; padding:0 24px;">
+  <div style="background:#2a2117; border:1px solid #6b4d1c; border-left:3px solid #f4b400; border-radius:4px; padding:18px 20px; font-family:'Inter',system-ui,sans-serif; color:#ecedec;">
+    <div style="font-family:'Barlow Condensed',sans-serif; font-weight:600; font-size:19px; margin-bottom:6px;">Firebase not configured yet</div>
+    <p style="font-size:13.5px; line-height:1.55; color:#c9cacb; margin:0 0 10px 0;">
+      This app needs a free Firebase project so scouting reports can sync across everyone's devices.
+      Open this file, find the <code style="background:#1e2023; padding:1px 6px; border-radius:3px;">firebaseConfig</code> object near the top of the
+      <code style="background:#1e2023; padding:1px 6px; border-radius:3px;">&lt;script type="module"&gt;</code> tag, and paste in your project's config values.
+      See the setup steps in chat for how to get them.
+    </p>
   </div>
 </div>
 
-<script>
-(function(){
-  var els = {
-    input: document.getElementById('team-input'),
-    err: document.getElementById('err'),
-    startBtn: document.getElementById('start-btn'),
-    screenInput: document.getElementById('screen-input'),
-    screenCompare: document.getElementById('screen-compare'),
-    screenResults: document.getElementById('screen-results'),
-    progressLabel: document.getElementById('progress-label'),
-    progressFill: document.getElementById('progress-fill'),
-    teamABtn: document.getElementById('team-a-btn'),
-    teamBBtn: document.getElementById('team-b-btn'),
-    teamANum: document.getElementById('team-a-num'),
-    teamBNum: document.getElementById('team-b-num'),
-    teamAName: document.getElementById('team-a-name'),
-    teamBName: document.getElementById('team-b-name'),
-    teamAEpa: document.getElementById('team-a-epa'),
-    teamBEpa: document.getElementById('team-b-epa'),
-    epaToggleBtn: document.getElementById('epa-toggle-btn'),
-    epaPanel: document.getElementById('epa-panel'),
-    epaEventKey: document.getElementById('epa-event-key'),
-    epaFetchBtn: document.getElementById('epa-fetch-btn'),
-    epaStatus: document.getElementById('epa-status'),
-    undoBtn: document.getElementById('undo-btn'),
-    resultsList: document.getElementById('results-list'),
-    copyBtn: document.getElementById('copy-btn'),
-    restartBtn: document.getElementById('restart-btn'),
-    copiedMsg: document.getElementById('copied-msg'),
-    fileInput: document.getElementById('file-input'),
-    tbaToggleBtn: document.getElementById('tba-toggle-btn'),
-    tbaPanel: document.getElementById('tba-panel'),
-    tbaEventKey: document.getElementById('tba-event-key'),
-    tbaApiKey: document.getElementById('tba-api-key'),
-    tbaImportBtn: document.getElementById('tba-import-btn'),
-    tbaStatus: document.getElementById('tba-status')
+<script type="module">
+  // ====================== FIREBASE SETUP ======================
+  // 1. Go to https://console.firebase.google.com, create a free project.
+  // 2. In the project, click the "</>" (web app) icon to register a web app.
+  // 3. Copy the firebaseConfig object it shows you and paste it in below,
+  //    replacing every "YOUR_..." placeholder.
+  // 4. In the left sidebar go to Firestore Database > Create database.
+  //    Start in test mode, pick any region close to you.
+  // 5. In the Firestore "Rules" tab, replace the rules with:
+  //      rules_version = '2';
+  //      service cloud.firestore {
+  //        match /databases/{database}/documents {
+  //          match /pit-reports/{report} {
+  //            allow read, write: if true;
+  //          }
+  //        }
+  //      }
+  //    (This keeps the data open to anyone with the app link — fine for an
+  //    internal team tool, but don't put sensitive info in it.)
+  // ==============================================================
+  const firebaseConfig = {
+    apiKey: "AIzaSyDd-bxsDiripyT3nhuhq0YXYmlH-mEpjUs",
+    authDomain: "pit-scouting-6996.firebaseapp.com",
+    projectId: "pit-scouting-6996",
+    storageBucket: "pit-scouting-6996.firebasestorage.app",
+    messagingSenderId: "213708242808",
+    appId: "1:213708242808:web:a79ad6ab4b9af46085928d"
+  };
+  
+  const isConfigured = firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith("YOUR_");
+
+  let db = null, fb = null;
+  if (isConfigured) {
+    const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js");
+    const firestore = await import("https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js");
+    fb = firestore;
+    const app = initializeApp(firebaseConfig);
+    db = firestore.getFirestore(app);
+  } else {
+    document.getElementById('setup-banner').style.display = 'block';
+  }
+
+  const DRIVEBASE_OPTS = ["Swerve","West Coast / Tank","Mecanum","Kit of Parts (KOP)","Other"];
+  const GROUND_INTAKE_OPTS = ["Under-bumper roller","Over-bumper roller","Claw / pincer","Funnel","No ground intake","Other"];
+  const HUMAN_LOAD_OPTS = ["Yes, dedicated feeder","No","Unknown"];
+  const SHOOTER_OPTS = ["Fixed angle","Adjustable hood","Turret (rotating)","Direct dump / point-blank","No shooter","Other"];
+  const AUTO_OPTS = ["Leave only (mobility)","Score preload, then leave","Score + climb Level 1","Multi-fuel cycling","Multi-fuel + climb","Other"];
+  const YESNO_OPTS = ["Yes","No","Unknown"];
+  const CLIMB_LEVEL_OPTS = ["None","Level 1","Level 2","Level 3","Unknown"];
+  const CLIMB_MECH_OPTS = ["Static hook","Winch / elevator","Telescoping arm","Pneumatic","No climber","Other"];
+
+  const FIELDS_META = [
+    ["teamNumber","Team #"], ["teamName","Team Name"], ["scoutName","Scout"],
+    ["eventNotes","Event / Context"],
+    ["drivebase","Drivebase"], ["drivebaseNotes","Drivebase Notes"],
+    ["groundIntake","Ground Intake"], ["humanLoad","Human Player Loading"],
+    ["shooterType","Shooter Type"], ["shooterNotes","Shooter Notes"],
+    ["autoType","Auto Routine"],
+    ["crossBump","Can Cross Bump"], ["crossTrench","Can Cross Trench"],
+    ["climbLevel","Best Climb Level"], ["climbMechanism","Climb Mechanism"],
+    ["strengths","Strengths"], ["weaknesses","Weaknesses / Concerns"],
+    ["timestamp","Submitted"]
+  ];
+
+  let state = {
+    tab: "submit",
+    reports: [],
+    loaded: false,
+    loadError: null,
+    saving: false,
+    saveMsg: null,
+    search: "",
+    drivebaseFilter: "All",
+    openRowId: null,
+    form: freshForm()
   };
 
-  var state = null; // set on start
-
-  function estimateTotalComparisons(n){
-    // log2(n!) is the information-theoretic minimum comparisons for a full sort;
-    // merge-insertion sort lands within a handful of comparisons of this.
-    var s = 0;
-    for (var i = 2; i <= n; i++) s += Math.log2(i);
-    return Math.max(Math.ceil(s), n - 1);
-  }
-
-  // ---- Ford-Johnson (merge insertion) sort, generator-driven so the UI can pause for a human answer ----
-  function* mergeInsertionSortGen(arr){
-    // Returns ascending order: least preferred first, most preferred last.
-    if (arr.length <= 1) return arr.slice();
-    if (arr.length === 2){
-      var aBetter = yield { a: arr[0], b: arr[1] };
-      return aBetter ? [arr[1], arr[0]] : [arr[0], arr[1]];
-    }
-
-    var n = arr.length;
-    var odd = null;
-    var work = arr;
-    if (n % 2 === 1){
-      odd = arr[n - 1];
-      work = arr.slice(0, n - 1);
-    }
-
-    var winners = [];
-    var loserOfWinner = new Map();
-    for (var i = 0; i < work.length; i += 2){
-      var x = work[i], y = work[i + 1];
-      var xBetter = yield { a: x, b: y };
-      var w = xBetter ? x : y;
-      var l = xBetter ? y : x;
-      winners.push(w);
-      loserOfWinner.set(w, l);
-    }
-
-    var sortedWinners = yield* mergeInsertionSortGen(winners);
-
-    var b1 = loserOfWinner.get(sortedWinners[0]);
-    var chain = [b1].concat(sortedWinners);
-
-    var remaining = [];
-    for (var k = 1; k < sortedWinners.length; k++){
-      remaining.push({ loser: loserOfWinner.get(sortedWinners[k]), winner: sortedWinners[k] });
-    }
-
-    var order = jacobsthalOrder(remaining.length);
-    for (var oi = 0; oi < order.length; oi++){
-      var item = remaining[order[oi]];
-      var winnerPos = chain.indexOf(item.winner);
-      var pos = yield* binaryInsertGen(chain, item.loser, 0, winnerPos);
-      chain.splice(pos, 0, item.loser);
-    }
-
-    if (odd !== null){
-      var pos2 = yield* binaryInsertGen(chain, odd, 0, chain.length);
-      chain.splice(pos2, 0, odd);
-    }
-
-    return chain;
-  }
-
-  function* binaryInsertGen(chain, item, lo, hi){
-    while (lo < hi){
-      var mid = (lo + hi) >> 1;
-      var chainBetter = yield { a: chain[mid], b: item };
-      if (chainBetter) hi = mid; else lo = mid + 1;
-    }
-    return lo;
-  }
-
-  function jacobsthalOrder(count){
-    // Insertion order that keeps each binary-insertion search range as small as possible.
-    if (count <= 0) return [];
-    var jac = [0, 1];
-    while (jac[jac.length - 1] < count + 2){
-      jac.push(jac[jac.length - 1] + 2 * jac[jac.length - 2]);
-    }
-    var order = [];
-    var used = new Array(count + 2).fill(false);
-    for (var k = 2; k < jac.length; k++){
-      var high = Math.min(jac[k], count + 1);
-      var low = jac[k - 1] + 1;
-      for (var label = high; label >= low; label--){
-        if (label >= 2 && label <= count + 1 && !used[label]){
-          order.push(label - 2);
-          used[label] = true;
-        }
-      }
-    }
-    return order;
-  }
-
-  function parseTeamLine(line){
-    // Try to split into columns on tab or comma (spreadsheet-style rows).
-    var cols = null;
-    if (line.indexOf('\t') !== -1){
-      cols = line.split('\t').map(function(c){ return c.trim(); }).filter(Boolean);
-    } else if (line.indexOf(',') !== -1 && !/^[\d,\s]+$/.test(line)){
-      cols = line.split(',').map(function(c){ return c.trim(); }).filter(Boolean);
-    }
-    if (cols && cols.length){
-      var m0 = cols[0].match(/^#?(\d{1,6})\b(.*)$/);
-      if (!m0) return null;
-      var leftover = m0[2].trim().replace(/^[-:.\s]+/, '');
-      return {
-        number: parseInt(m0[1], 10),
-        name: leftover || (cols[1] || '')
-      };
-    }
-    // Plain "1114 - Simbotics", "1114 Simbotics", or bare "1114"
-    var m = line.match(/^#?(\d{1,6})\b(.*)$/);
-    if (!m) return null;
+  function freshForm(){
     return {
-      number: parseInt(m[1], 10),
-      name: m[2].trim().replace(/^[-:.\s]+/, '').trim()
+      teamNumber:"", teamName:"", scoutName:"", eventNotes:"",
+      drivebase:"", drivebaseOther:"", drivebaseNotes:"",
+      groundIntake:"", groundIntakeOther:"",
+      humanLoad:"",
+      shooterType:"", shooterOther:"", shooterNotes:"",
+      autoType:"", autoOther:"",
+      crossBump:"", crossTrench:"",
+      climbLevel:"", climbMechanism:"", climbMechanismOther:"",
+      strengths:"", weaknesses:""
     };
   }
 
-  function parseTeams(raw){
-    var seen = {};
-    var teams = [];
-
-    raw.split(/\r?\n/).forEach(function(line){
-      if (!line.trim()) return;
-
-      if (/^[\d,\s]+$/.test(line)){
-        // a line of bare numbers, e.g. "1114, 254 2056"
-        line.split(/[,\s]+/).filter(Boolean).forEach(function(tok){
-          var n = parseInt(tok, 10);
-          if (isNaN(n) || n <= 0 || seen[n]) return;
-          seen[n] = true;
-          teams.push({ number: n, name: '' });
-        });
-        return;
-      }
-
-      var parsed = parseTeamLine(line);
-      if (!parsed || isNaN(parsed.number) || parsed.number <= 0 || seen[parsed.number]) return;
-      seen[parsed.number] = true;
-      teams.push(parsed);
-    });
-
-    return teams;
+  function esc(s){
+    return String(s===undefined||s===null?"":s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
-  function shuffle(arr){
-    for (var i = arr.length - 1; i > 0; i--){
-      var j = Math.floor(Math.random() * (i + 1));
-      var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
-    }
-    return arr;
-  }
-
-  function startRanking(){
-    var raw = els.input.value;
-    var teams = parseTeams(raw);
-    if (teams.length < 2){
-      els.err.textContent = 'Enter at least 2 distinct team numbers.';
+  function startListening(){
+    if(!isConfigured){
+      state.loaded = true;
+      render();
       return;
     }
-    els.err.textContent = '';
-    shuffle(teams);
-    teams.forEach(function(t){
-      if (t.number in epaCache) t.epa = epaCache[t.number];
-    });
-
-    state = {
-      teams: teams,
-      answers: [],
-      gen: null,
-      pending: null,
-      totalEstimate: estimateTotalComparisons(teams.length)
-    };
-    state.gen = mergeInsertionSortGen(teams);
-    state.pending = state.gen.next();
-
-    els.screenInput.classList.add('hidden');
-    els.screenResults.classList.add('hidden');
-    els.screenCompare.classList.remove('hidden');
-
-    advance();
-  }
-
-  function advance(){
-    if (state.pending.done){
-      finish(state.pending.value.slice().reverse()); // ascending -> best first
-      return;
-    }
-    showComparison();
-  }
-
-  function showComparison(){
-    var pair = state.pending.value;
-    els.teamANum.textContent = pair.a.number;
-    els.teamAName.textContent = pair.a.name || '';
-    els.teamAEpa.textContent = formatEpa(pair.a.epa);
-    els.teamBNum.textContent = pair.b.number;
-    els.teamBName.textContent = pair.b.name || '';
-    els.teamBEpa.textContent = formatEpa(pair.b.epa);
-    els.progressLabel.textContent = 'Comparison ' + (state.answers.length + 1) +
-      ' of ~' + state.totalEstimate;
-    var pct = Math.min(95, Math.round((state.answers.length / state.totalEstimate) * 100));
-    els.progressFill.style.width = pct + '%';
-    els.undoBtn.style.visibility = state.answers.length ? 'visible' : 'hidden';
-  }
-
-  function choose(aIsBetter){
-    state.answers.push(aIsBetter);
-    state.pending = state.gen.next(aIsBetter);
-    advance();
-  }
-
-  function undo(){
-    if (!state.answers.length) return;
-    state.answers.pop();
-    state.gen = mergeInsertionSortGen(state.teams);
-    state.pending = state.gen.next();
-    for (var i = 0; i < state.answers.length; i++){
-      state.pending = state.gen.next(state.answers[i]);
-    }
-    advance();
-  }
-
-  function finish(sorted){
-    state.sorted = sorted;
-    els.screenCompare.classList.add('hidden');
-    els.screenResults.classList.remove('hidden');
-    els.resultsList.innerHTML = '';
-    state.sorted.forEach(function(team){
-      var li = document.createElement('li');
-      var numSpan = document.createElement('span');
-      numSpan.className = 'res-num';
-      numSpan.textContent = team.number;
-      li.appendChild(numSpan);
-      if (team.name){
-        var nameSpan = document.createElement('span');
-        nameSpan.className = 'res-name';
-        nameSpan.textContent = team.name;
-        li.appendChild(nameSpan);
-      }
-      if (typeof team.epa === 'number'){
-        var epaSpan = document.createElement('span');
-        epaSpan.className = 'res-epa';
-        epaSpan.textContent = formatEpa(team.epa);
-        li.appendChild(epaSpan);
-      }
-      els.resultsList.appendChild(li);
-    });
-    els.copiedMsg.classList.add('hidden');
-  }
-
-  function copyList(){
-    var text = state.sorted.map(function(team){
-      var line = team.name ? (team.number + ' - ' + team.name) : String(team.number);
-      if (typeof team.epa === 'number') line += ' (' + formatEpa(team.epa) + ')';
-      return line;
-    }).join('\n');
-    var done = function(){
-      els.copiedMsg.classList.remove('hidden');
-      setTimeout(function(){ els.copiedMsg.classList.add('hidden'); }, 1600);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done, function(){ fallbackCopy(text, done); });
-    } else {
-      fallbackCopy(text, done);
-    }
-  }
-
-  function fallbackCopy(text, done){
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); } catch(e){}
-    document.body.removeChild(ta);
-    done();
-  }
-
-  function restart(){
-    els.input.value = '';
-    els.err.textContent = '';
-    els.screenResults.classList.add('hidden');
-    els.screenCompare.classList.add('hidden');
-    els.screenInput.classList.remove('hidden');
-  }
-
-  function handleFileUpload(e){
-    var file = e.target.files && e.target.files[0];
-    if (!file) return;
-    var reader = new FileReader();
-    reader.onload = function(evt){
-      var existing = els.input.value.trim();
-      var incoming = evt.target.result;
-      els.input.value = existing ? (existing + '\n' + incoming) : incoming;
-      els.err.textContent = '';
-    };
-    reader.onerror = function(){
-      els.err.textContent = 'Could not read that file.';
-    };
-    reader.readAsText(file);
-    e.target.value = ''; // allow re-uploading the same file later
-  }
-
-  function toggleTbaPanel(){
-    els.tbaPanel.classList.toggle('hidden');
-  }
-
-  function importFromTba(){
-    var eventKey = els.tbaEventKey.value.trim();
-    var apiKey = els.tbaApiKey.value.trim();
-    els.tbaStatus.className = '';
-    if (!eventKey || !apiKey){
-      els.tbaStatus.textContent = 'Enter both the event key and your API key.';
-      els.tbaStatus.className = 'status-err';
-      return;
-    }
-    els.tbaStatus.textContent = 'Fetching\u2026';
-    var url = 'https://www.thebluealliance.com/api/v3/event/' + encodeURIComponent(eventKey) + '/teams/simple';
-    fetch(url, { headers: { 'X-TBA-Auth-Key': apiKey } })
-      .then(function(res){
-        if (res.status === 401 || res.status === 403){
-          throw new Error('That API key was rejected. Double-check it on your TBA account page.');
-        }
-        if (res.status === 404){
-          throw new Error('No event found for that key. Check the event key (e.g. 2026casj).');
-        }
-        if (!res.ok){
-          throw new Error('The Blue Alliance returned an error (status ' + res.status + ').');
-        }
-        return res.json();
-      })
-      .then(function(data){
-        if (!Array.isArray(data) || !data.length){
-          throw new Error('No teams came back for that event.');
-        }
-        var teams = data
-          .filter(function(t){ return typeof t.team_number === 'number'; })
-          .map(function(t){ return { number: t.team_number, name: t.nickname || '' }; })
-          .sort(function(a,b){ return a.number - b.number; });
-        els.input.value = teams.map(function(t){
-          return t.name ? (t.number + ' - ' + t.name) : String(t.number);
-        }).join('\n');
-        els.tbaStatus.textContent = 'Imported ' + teams.length + ' teams.';
-        els.tbaStatus.className = 'status-ok';
-        els.err.textContent = '';
-      })
-      .catch(function(err){
-        els.tbaStatus.textContent = (err && err.message) ?
-          err.message :
-          'Could not reach The Blue Alliance from here \u2014 paste the list manually instead.';
-        els.tbaStatus.className = 'status-err';
+    const colRef = fb.collection(db, 'pit-reports');
+    fb.onSnapshot(colRef, (snapshot)=>{
+      const rows = [];
+      snapshot.forEach(docSnap=>{
+        rows.push(Object.assign({ id: docSnap.id }, docSnap.data()));
       });
+      rows.sort((a,b)=> (b.timestamp||"").localeCompare(a.timestamp||""));
+      state.reports = rows;
+      state.loaded = true;
+      render();
+    }, (err)=>{
+      state.loaded = true;
+      state.loadError = "Couldn't connect to the shared database. Check the Firestore rules and config.";
+      render();
+    });
   }
 
-  var epaCache = {}; // team number -> epa (number) or null if looked up and unavailable
+  function resolvedValue(base, other){
+    if(base === "Other") return other && other.trim() ? ("Other: " + other.trim()) : "Other";
+    return base;
+  }
 
-  function extractEpa(data){
-    if (!data || typeof data !== 'object') return null;
-    var candidates = [
-      data.epa && data.epa.total_points && data.epa.total_points.mean,
-      data.epa && data.epa.breakdown && data.epa.breakdown.total_points,
-      data.epa && data.epa.mean,
-      typeof data.epa === 'number' ? data.epa : undefined,
-      data.norm_epa && data.norm_epa.current,
-      typeof data.norm_epa === 'number' ? data.norm_epa : undefined
-    ];
-    for (var i = 0; i < candidates.length; i++){
-      if (typeof candidates[i] === 'number' && !isNaN(candidates[i])) return candidates[i];
-    }
+  function validate(f){
+    if(!f.teamNumber.trim()) return "Team number is required.";
+    if(!f.scoutName.trim()) return "Scout name is required.";
+    if(!f.drivebase) return "Select a drivebase type.";
     return null;
   }
 
-  function toggleEpaPanel(){
-    els.epaPanel.classList.toggle('hidden');
-  }
+  async function handleSubmit(){
+    const f = state.form;
+    const err = validate(f);
+    if(err){ state.saveMsg = {type:"err", text: err}; render(); return; }
 
-  function fetchEpaForEvent(){
-    var eventKey = els.epaEventKey.value.trim();
-    if (!eventKey){
-      els.epaStatus.textContent = 'Enter an event key.';
-      els.epaStatus.className = 'status-err';
+    const report = {
+      teamNumber: f.teamNumber.trim(),
+      teamName: f.teamName.trim(),
+      scoutName: f.scoutName.trim(),
+      eventNotes: f.eventNotes.trim(),
+      drivebase: resolvedValue(f.drivebase, f.drivebaseOther),
+      drivebaseNotes: f.drivebaseNotes.trim(),
+      groundIntake: resolvedValue(f.groundIntake, f.groundIntakeOther),
+      humanLoad: f.humanLoad || "Unknown",
+      shooterType: resolvedValue(f.shooterType, f.shooterOther),
+      shooterNotes: f.shooterNotes.trim(),
+      autoType: resolvedValue(f.autoType, f.autoOther),
+      crossBump: f.crossBump || "Unknown",
+      crossTrench: f.crossTrench || "Unknown",
+      climbLevel: f.climbLevel || "Unknown",
+      climbMechanism: resolvedValue(f.climbMechanism, f.climbMechanismOther),
+      strengths: f.strengths.trim(),
+      weaknesses: f.weaknesses.trim(),
+      timestamp: new Date().toISOString()
+    };
+
+    if(!isConfigured){
+      state.saveMsg = {type:"err", text: "Firebase isn't configured yet — see the banner above."};
+      render();
       return;
     }
-    els.epaStatus.className = '';
-    els.epaStatus.textContent = 'Fetching\u2026';
 
-    var url = 'https://api.statbotics.io/v3/team_events?event=' + encodeURIComponent(eventKey) + '&limit=100';
-    fetch(url)
-      .then(function(res){
-        if (!res.ok) throw new Error('Statbotics returned an error (status ' + res.status + ').');
-        return res.json();
-      })
-      .then(function(data){
-        if (!Array.isArray(data) || !data.length){
-          throw new Error('No EPA data found for that event key.');
-        }
-        var count = 0;
-        data.forEach(function(rec){
-          var num = typeof rec.team === 'number' ? rec.team : parseInt(rec.team, 10);
-          if (isNaN(num)) return;
-          var epa = extractEpa(rec);
-          if (epa !== null){
-            epaCache[num] = epa;
-            count++;
-          }
-        });
-        els.epaStatus.textContent = 'Got EPA for ' + count + ' teams at that event.';
-        els.epaStatus.className = 'status-ok';
-      })
-      .catch(function(err){
-        els.epaStatus.textContent = (err && err.message) ?
-          err.message :
-          'Could not reach Statbotics from here.';
-        els.epaStatus.className = 'status-err';
+    state.saving = true; render();
+    try{
+      await fb.addDoc(fb.collection(db, 'pit-reports'), report);
+      state.saveMsg = {type:"ok", text: "Report saved for team " + report.teamNumber + "."};
+      state.form = freshForm();
+    }catch(e){
+      state.saveMsg = {type:"err", text: "Couldn't save — check your connection and Firestore rules."};
+    }
+    state.saving = false;
+    render();
+  }
+
+  async function handleDelete(id){
+    try{
+      await fb.deleteDoc(fb.doc(db, 'pit-reports', id));
+    }catch(e){
+      alert("Couldn't delete — check your connection and try again.");
+    }
+  }
+
+  function csvEscape(v){
+    const s = String(v===undefined||v===null?"":v);
+    if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+    return s;
+  }
+
+  function exportCSV(){
+    const rows = filteredReports();
+    if(!rows.length) return;
+    const header = FIELDS_META.map(f=>f[1]);
+    const lines = [header.map(csvEscape).join(",")];
+    rows.forEach(r=>{
+      lines.push(FIELDS_META.map(f=>csvEscape(r[f[0]])).join(","));
+    });
+    const csv = lines.join("\r\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pit_scouting_rebuilt_2026.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }
+
+  function filteredReports(){
+    let rows = state.reports;
+    if(state.drivebaseFilter !== "All"){
+      rows = rows.filter(r => (r.drivebase||"").startsWith(state.drivebaseFilter));
+    }
+    if(state.search.trim()){
+      const q = state.search.trim().toLowerCase();
+      rows = rows.filter(r =>
+        (r.teamNumber||"").toLowerCase().includes(q) ||
+        (r.teamName||"").toLowerCase().includes(q)
+      );
+    }
+    return rows;
+  }
+
+  function pillGroup(name, options, current, extraOnclick){
+    return options.map(opt => {
+      const sel = current === opt;
+      return `<button type="button" class="radio-pill ${sel?'selected':''}" data-field="${name}" data-value="${esc(opt)}">${esc(opt)}</button>`;
+    }).join("");
+  }
+
+  function render(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
+            <div class="brand-sub">2026 FIRST Robotics Competition — qualitative pit scouting</div>
+          </div>
+          <div class="tabs">
+            <button class="tab-btn ${state.tab==='submit'?'active':''}" data-tab="submit">New Report</button>
+            <button class="tab-btn ${state.tab==='data'?'active':''}" data-tab="data">Scouting Data (${state.reports.length})</button>
+          </div>
+        </div>
+      </div>
+      <div class="wrap">
+        ${!state.loaded ? `<div class="loading-note">Loading scouting data…</div>` : (state.tab==='submit' ? renderSubmit() : renderData())}
+        <div class="footnote">Reports sync live to everyone using this app — teammates scouting other teams will see new submissions appear automatically, and can export the same data.</div>
+      </div>
+    `;
+    attachHandlers();
+  }
+
+  function renderSubmit(){
+    const f = state.form;
+    return `
+      <div class="section-card identity">
+        <div class="section-title">Team identity</div>
+        <p class="section-hint">Who you're scouting and who's filling this out.</p>
+        <div class="grid3">
+          <div class="field"><label>Team number *</label><input type="text" inputmode="numeric" id="f-teamNumber" value="${esc(f.teamNumber)}" placeholder="e.g. 1676"></div>
+          <div class="field"><label>Team name</label><input type="text" id="f-teamName" value="${esc(f.teamName)}" placeholder="e.g. Pascack Pi-oneers"></div>
+          <div class="field"><label>Scout name *</label><input type="text" id="f-scoutName" value="${esc(f.scoutName)}" placeholder="Your name"></div>
+        </div>
+        <div class="field"><label>Event / context (optional)</label><input type="text" id="f-eventNotes" value="${esc(f.eventNotes)}" placeholder="e.g. practice field, week 2 event"></div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Drivebase</div>
+        <p class="section-hint">What the robot drives on.</p>
+        <div class="field">
+          <label>Drivebase type *</label>
+          <div class="radio-row">${pillGroup('drivebase', DRIVEBASE_OPTS, f.drivebase)}</div>
+          ${f.drivebase==='Other' ? `<div class="other-input"><input type="text" id="f-drivebaseOther" value="${esc(f.drivebaseOther)}" placeholder="Describe drivebase"></div>` : ''}
+        </div>
+        <div class="field"><label>Drivebase notes (optional)</label><textarea id="f-drivebaseNotes" placeholder="Wheel type, low/high profile, notable maneuverability">${esc(f.drivebaseNotes)}</textarea></div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Intake &amp; loading</div>
+        <p class="section-hint">How Fuel gets onto the robot.</p>
+        <div class="field">
+          <label>Ground intake type</label>
+          <div class="radio-row">${pillGroup('groundIntake', GROUND_INTAKE_OPTS, f.groundIntake)}</div>
+          ${f.groundIntake==='Other' ? `<div class="other-input"><input type="text" id="f-groundIntakeOther" value="${esc(f.groundIntakeOther)}" placeholder="Describe intake"></div>` : ''}
+        </div>
+        <div class="field">
+          <label>Takes Fuel from a human player</label>
+          <div class="radio-row">${pillGroup('humanLoad', HUMAN_LOAD_OPTS, f.humanLoad)}</div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Shooter</div>
+        <p class="section-hint">How Fuel is scored into the Hub.</p>
+        <div class="field">
+          <label>Shooter type</label>
+          <div class="radio-row">${pillGroup('shooterType', SHOOTER_OPTS, f.shooterType)}</div>
+          ${f.shooterType==='Other' ? `<div class="other-input"><input type="text" id="f-shooterOther" value="${esc(f.shooterOther)}" placeholder="Describe shooter"></div>` : ''}
+        </div>
+        <div class="field"><label>Shooter notes (optional)</label><textarea id="f-shooterNotes" placeholder="Range, accuracy impression, indexer style">${esc(f.shooterNotes)}</textarea></div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Autonomous</div>
+        <p class="section-hint">What the robot is designed to do before driver control.</p>
+        <div class="field">
+          <label>Auto routine type</label>
+          <div class="radio-row">${pillGroup('autoType', AUTO_OPTS, f.autoType)}</div>
+          ${f.autoType==='Other' ? `<div class="other-input"><input type="text" id="f-autoOther" value="${esc(f.autoOther)}" placeholder="Describe auto routine"></div>` : ''}
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Field crossing</div>
+        <p class="section-hint">Bump and Trench are the two routes across the field.</p>
+        <div class="grid2">
+          <div class="field"><label>Can cross the Bump</label><div class="radio-row">${pillGroup('crossBump', YESNO_OPTS, f.crossBump)}</div></div>
+          <div class="field"><label>Can cross the Trench</label><div class="radio-row">${pillGroup('crossTrench', YESNO_OPTS, f.crossTrench)}</div></div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Tower climb</div>
+        <p class="section-hint">Endgame climbing capability.</p>
+        <div class="field">
+          <label>Best climb level observed / claimed</label>
+          <div class="radio-row">${pillGroup('climbLevel', CLIMB_LEVEL_OPTS, f.climbLevel)}</div>
+        </div>
+        <div class="field">
+          <label>Climb mechanism</label>
+          <div class="radio-row">${pillGroup('climbMechanism', CLIMB_MECH_OPTS, f.climbMechanism)}</div>
+          ${f.climbMechanism==='Other' ? `<div class="other-input"><input type="text" id="f-climbMechanismOther" value="${esc(f.climbMechanismOther)}" placeholder="Describe climb mechanism"></div>` : ''}
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">Scout impressions</div>
+        <p class="section-hint">Free-form — anything a table of options can't capture.</p>
+        <div class="field"><label>Strengths</label><textarea id="f-strengths" placeholder="What this robot does well">${esc(f.strengths)}</textarea></div>
+        <div class="field"><label>Weaknesses / concerns</label><textarea id="f-weaknesses" placeholder="Reliability worries, slow cycles, driving issues">${esc(f.weaknesses)}</textarea></div>
+      </div>
+
+      <div class="submit-row">
+        <button class="btn-primary" id="submit-btn" ${state.saving?'disabled':''}>${state.saving ? 'Saving…' : 'Save report'}</button>
+        ${state.saveMsg ? `<span class="status-msg ${state.saveMsg.type}">${esc(state.saveMsg.text)}</span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderData(){
+    const rows = filteredReports();
+    const drivebaseOptions = ["All", ...DRIVEBASE_OPTS.filter(o=>o!=='Other')];
+
+    let body;
+    if(!state.reports.length){
+      body = `<div class="empty-state">
+        <h3>No reports yet</h3>
+        <p>Submit a pit report from the "New Report" tab to see it here.</p>
+      </div>`;
+    } else if(!rows.length){
+      body = `<div class="empty-state">
+        <h3>No matches</h3>
+        <p>No reports match your search or filter.</p>
+      </div>`;
+    } else {
+      body = `<div class="report-list">` + rows.map(r => renderRow(r)).join("") + `</div>`;
+    }
+
+    return `
+      <div class="data-toolbar">
+        <input type="text" id="search-input" placeholder="Search team # or name" value="${esc(state.search)}">
+        <select id="drivebase-filter">
+          ${drivebaseOptions.map(o=>`<option value="${esc(o)}" ${state.drivebaseFilter===o?'selected':''}>${o==='All'?'All drivebases':esc(o)}</option>`).join("")}
+        </select>
+        <div class="spacer"></div>
+        <button class="btn-export" id="export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
+      </div>
+      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${state.reports.length}</b> report${state.reports.length===1?'':'s'}</div>
+      ${body}
+    `;
+  }
+
+  function renderRow(r){
+    const open = state.openRowId === r.id;
+    const submitted = new Date(r.timestamp);
+    const submittedStr = isNaN(submitted) ? "" : submitted.toLocaleString();
+    return `
+      <div class="report-row ${open?'open':''}" data-row-id="${r.id}">
+        <div class="report-row-head">
+          <span class="expand-arrow">▶</span>
+          <span class="team-badge">${esc(r.teamNumber)}</span>
+          <span class="team-name">${esc(r.teamName || 'Unnamed team')}</span>
+          <div class="row-tags">
+            <span class="tag">${esc(r.drivebase||'—')}</span>
+            <span class="tag">Climb: ${esc(r.climbLevel||'—')}</span>
+          </div>
+        </div>
+        <div class="row-meta">Scouted by ${esc(r.scoutName||'—')}${submittedStr ? ' · ' + submittedStr : ''}${r.eventNotes ? ' · ' + esc(r.eventNotes) : ''}</div>
+        <div class="report-detail">
+          <dl class="detail-grid">
+            <div class="detail-item"><dt>Ground intake</dt><dd>${esc(r.groundIntake||'—')}</dd></div>
+            <div class="detail-item"><dt>Human player loading</dt><dd>${esc(r.humanLoad||'—')}</dd></div>
+            <div class="detail-item"><dt>Shooter type</dt><dd>${esc(r.shooterType||'—')}</dd></div>
+            <div class="detail-item"><dt>Auto routine</dt><dd>${esc(r.autoType||'—')}</dd></div>
+            <div class="detail-item"><dt>Crosses Bump</dt><dd>${esc(r.crossBump||'—')}</dd></div>
+            <div class="detail-item"><dt>Crosses Trench</dt><dd>${esc(r.crossTrench||'—')}</dd></div>
+            <div class="detail-item"><dt>Climb mechanism</dt><dd>${esc(r.climbMechanism||'—')}</dd></div>
+            <div class="detail-item"><dt>Best climb level</dt><dd>${esc(r.climbLevel||'—')}</dd></div>
+            ${r.drivebaseNotes ? `<div class="detail-item detail-full"><dt>Drivebase notes</dt><dd>${esc(r.drivebaseNotes)}</dd></div>` : ''}
+            ${r.shooterNotes ? `<div class="detail-item detail-full"><dt>Shooter notes</dt><dd>${esc(r.shooterNotes)}</dd></div>` : ''}
+            ${r.strengths ? `<div class="detail-item detail-full"><dt>Strengths</dt><dd>${esc(r.strengths)}</dd></div>` : ''}
+            ${r.weaknesses ? `<div class="detail-item detail-full"><dt>Weaknesses / concerns</dt><dd>${esc(r.weaknesses)}</dd></div>` : ''}
+          </dl>
+          <button class="delete-btn" data-delete-id="${r.id}">Delete this report</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function attachHandlers(){
+    document.querySelectorAll('.tab-btn').forEach(el=>{
+      el.onclick = ()=>{ state.tab = el.dataset.tab; state.saveMsg=null; render(); };
+    });
+
+    if(state.tab==='submit'){
+      const bind = (id, key) => {
+        const el = document.getElementById(id);
+        if(el) el.oninput = ()=>{ state.form[key] = el.value; };
+      };
+      bind('f-teamNumber','teamNumber'); bind('f-teamName','teamName'); bind('f-scoutName','scoutName');
+      bind('f-eventNotes','eventNotes'); bind('f-drivebaseOther','drivebaseOther'); bind('f-drivebaseNotes','drivebaseNotes');
+      bind('f-groundIntakeOther','groundIntakeOther'); bind('f-shooterOther','shooterOther'); bind('f-shooterNotes','shooterNotes');
+      bind('f-autoOther','autoOther'); bind('f-climbMechanismOther','climbMechanismOther');
+      bind('f-strengths','strengths'); bind('f-weaknesses','weaknesses');
+
+      document.querySelectorAll('.radio-pill').forEach(el=>{
+        el.onclick = ()=>{
+          const field = el.dataset.field;
+          const value = el.dataset.value;
+          state.form[field] = (state.form[field] === value) ? "" : value;
+          state.saveMsg = null;
+          render();
+        };
       });
+
+      const submitBtn = document.getElementById('submit-btn');
+      if(submitBtn) submitBtn.onclick = handleSubmit;
+    }
+
+    if(state.tab==='data'){
+      const searchEl = document.getElementById('search-input');
+      if(searchEl) searchEl.oninput = ()=>{ state.search = searchEl.value; render(); };
+      const filterEl = document.getElementById('drivebase-filter');
+      if(filterEl) filterEl.onchange = ()=>{ state.drivebaseFilter = filterEl.value; render(); };
+      const exportBtn = document.getElementById('export-btn');
+      if(exportBtn) exportBtn.onclick = exportCSV;
+
+      document.querySelectorAll('.report-row').forEach(el=>{
+        el.addEventListener('click', (ev)=>{
+          if(ev.target.closest('.delete-btn')) return;
+          const id = el.dataset.rowId;
+          state.openRowId = state.openRowId === id ? null : id;
+          render();
+        });
+      });
+      document.querySelectorAll('[data-delete-id]').forEach(el=>{
+        el.onclick = (ev)=>{
+          ev.stopPropagation();
+          if(confirm('Delete this scouting report? This cannot be undone.')){
+            handleDelete(el.dataset.deleteId);
+          }
+        };
+      });
+    }
   }
 
-  function formatEpa(value){
-    return typeof value === 'number' ? ('EPA ' + Math.round(value * 10) / 10) : '';
-  }
-
-  els.epaToggleBtn.addEventListener('click', toggleEpaPanel);
-  els.epaFetchBtn.addEventListener('click', fetchEpaForEvent);
-
-  els.fileInput.addEventListener('change', handleFileUpload);
-  els.tbaToggleBtn.addEventListener('click', toggleTbaPanel);
-  els.tbaImportBtn.addEventListener('click', importFromTba);
-
-  els.startBtn.addEventListener('click', startRanking);
-  els.teamABtn.addEventListener('click', function(){ choose(true); });
-  els.teamBBtn.addEventListener('click', function(){ choose(false); });
-  els.undoBtn.addEventListener('click', undo);
-  els.copyBtn.addEventListener('click', copyList);
-  els.restartBtn.addEventListener('click', restart);
-  els.input.addEventListener('keydown', function(e){
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) startRanking();
-  });
-})();
+  render();
+  startListening();
 </script>
 </body>
 </html>
