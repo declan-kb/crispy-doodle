@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Picklist Ranker</title>
+<style>
+  :root{
+    --bg: #14181f;
+    --panel: #1c222c;
+    --panel-2: #232a36;
+    --line: #333c4a;
+    --ink: #e9edf3;
+    --ink-dim: #8e99ab;
+    --accent: #ff6a2b;
+    --accent-ink: #1a1206;
+    --good: #2ec4b6;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    min-height:100vh;
+    display:flex;
+    align-items:flex-start;
+    justify-content:center;
+    padding:32px 16px;
+  }
+  .wrap{width:100%;max-width:640px;}
+  .eyebrow{
+    color:var(--ink-dim);
+    font-size:13px;
+    letter-spacing:.02em;
+    margin:0 0 6px;
+  }
+  h1{
+    font-size:28px;
+    margin:0 0 24px;
+    letter-spacing:-.01em;
+    font-weight:700;
+  }
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:28px;
+  }
+  textarea{
+    width:100%;
+    min-height:120px;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:10px;
+    color:var(--ink);
+    font-size:16px;
+    font-family:inherit;
+    padding:14px;
+    resize:vertical;
+  }
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px;}
+  .hint{color:var(--ink-dim);font-size:13px;margin-top:8px;line-height:1.5;}
+  button{
+    font-family:inherit;
+    cursor:pointer;
+    border:none;
+  }
+  .btn-primary{
+    background:var(--accent);
+    color:var(--accent-ink);
+    font-weight:700;
+    font-size:16px;
+    padding:13px 22px;
+    border-radius:10px;
+    margin-top:18px;
+  }
+  .btn-primary:disabled{opacity:.4;cursor:not-allowed;}
+  .btn-ghost{
+    background:transparent;
+    color:var(--ink-dim);
+    font-size:14px;
+    padding:8px 4px;
+    text-decoration:underline;
+    text-underline-offset:3px;
+  }
+  .btn-ghost:hover{color:var(--ink);}
+  #err{color:#ff8a65;font-size:14px;margin-top:10px;min-height:18px;}
+
+  /* Comparison screen */
+  .progress-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
+  .progress-label{color:var(--ink-dim);font-size:13px;}
+  .progress-track{
+    background:var(--panel-2);
+    border-radius:6px;
+    height:6px;
+    overflow:hidden;
+    margin-top:20px;
+  }
+  .progress-fill{
+    background:var(--good);
+    height:100%;
+    width:0%;
+    transition:width .25s ease;
+  }
+  .vs-row{
+    display:flex;
+    align-items:stretch;
+    gap:14px;
+    margin-top:6px;
+  }
+  .team-btn{
+    flex:1;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:38px 12px;
+    text-align:center;
+    transition:border-color .12s ease, transform .08s ease;
+  }
+  .team-btn:hover{border-color:var(--accent);}
+  .team-btn:active{transform:scale(.98);}
+  .team-num{
+    font-size:44px;
+    font-weight:800;
+    color:var(--ink);
+    letter-spacing:-.01em;
+    font-variant-numeric:tabular-nums;
+  }
+  .team-name{
+    display:block;
+    margin-top:8px;
+    font-size:14px;
+    color:var(--ink-dim);
+    min-height:18px;
+    line-height:1.3;
+  }
+  .team-epa{
+    display:inline-block;
+    margin-top:6px;
+    font-size:12px;
+    color:var(--good);
+    background:rgba(46,196,182,0.12);
+    padding:3px 9px;
+    border-radius:999px;
+    font-variant-numeric:tabular-nums;
+  }
+  .team-epa:empty{ display:none; }
+  .team-pick{
+    display:block;
+    margin-top:10px;
+    font-size:12px;
+    color:var(--ink-dim);
+  }
+  .vs-divider{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:var(--ink-dim);
+    font-size:13px;
+    font-weight:700;
+    width:28px;
+  }
+  .prompt{color:var(--ink-dim);font-size:14px;margin:0 0 4px;}
+  .foot-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-top:20px;
+  }
+
+  /* Results */
+  ol.results{list-style:none;margin:0;padding:0;counter-reset:rank;}
+  ol.results li{
+    counter-increment:rank;
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:12px 4px;
+    border-bottom:1px solid var(--line);
+  }
+  ol.results li:last-child{border-bottom:none;}
+  ol.results li::before{
+    content:counter(rank);
+    font-size:13px;
+    color:var(--accent-ink);
+    background:var(--accent);
+    width:26px;
+    height:26px;
+    border-radius:7px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-weight:800;
+    flex-shrink:0;
+  }
+  .res-num{
+    font-size:20px;
+    font-weight:700;
+    font-variant-numeric:tabular-nums;
+  }
+  .res-name{
+    font-size:14px;
+    color:var(--ink-dim);
+  }
+  .res-epa{
+    font-size:12px;
+    color:var(--good);
+    background:rgba(46,196,182,0.12);
+    padding:2px 8px;
+    border-radius:999px;
+    font-variant-numeric:tabular-nums;
+    margin-left:auto;
+  }
+  .actions{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;}
+  .btn-secondary{
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--ink);
+    font-size:14px;
+    padding:11px 18px;
+    border-radius:10px;
+  }
+  .btn-secondary:hover{border-color:var(--accent);}
+  .copied{color:var(--good);font-size:13px;margin-left:4px;}
+  .hidden{display:none;}
+
+  /* Import options */
+  .import-row{
+    display:flex;
+    gap:8px;
+    margin-top:16px;
+    flex-wrap:wrap;
+  }
+  .tab-btn{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--ink-dim);
+    font-size:13px;
+    padding:8px 14px;
+    border-radius:999px;
+  }
+  .tab-btn.active{
+    border-color:var(--accent);
+    color:var(--ink);
+  }
+  .tab-btn:hover{color:var(--ink);}
+  .file-label{
+    display:inline-block;
+  }
+  #file-input{
+    position:absolute;
+    width:1px;height:1px;
+    opacity:0;
+    overflow:hidden;
+  }
+  .tba-panel{
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:16px;
+    margin-top:12px;
+  }
+  .field-row{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+  .field{
+    flex:1;
+    min-width:160px;
+  }
+  .field label{
+    display:block;
+    font-size:12px;
+    color:var(--ink-dim);
+    margin-bottom:6px;
+  }
+  .field input{
+    width:100%;
+    background:var(--bg);
+    border:1px solid var(--line);
+    border-radius:8px;
+    color:var(--ink);
+    font-size:15px;
+    font-family:inherit;
+    padding:10px 12px;
+  }
+  .field input:focus{outline:2px solid var(--accent);outline-offset:1px;}
+  .tba-note{color:var(--ink-dim);font-size:12px;margin-top:10px;line-height:1.5;}
+  .tba-note a{color:var(--good);}
+  #tba-status{font-size:13px;margin-top:10px;min-height:16px;}
+  .status-ok{color:var(--good);}
+  .status-err{color:#ff8a65;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">FRC Scouting</p>
+  <h1>Picklist Ranker</h1>
+
+  <!-- SCREEN 1: INPUT -->
+  <div class="card" id="screen-input">
+    <p class="prompt" style="margin-bottom:10px;">Paste in every team number you're ranking. One per line, or separated by commas or spaces.</p>
+    <textarea id="team-input" placeholder="1114&#10;254&#10;2056&#10;5940&#10;..."></textarea>
+    <div class="hint">You'll be shown two teams at a time and pick the one you'd rather have as an alliance partner. The ranker uses those picks to sort the whole list, so you won't need to compare every possible pair.</div>
+
+    <div class="import-row">
+      <label class="file-label tab-btn" for="file-input">Upload a file</label>
+      <input type="file" id="file-input" accept=".csv,.txt">
+      <button class="tab-btn" id="tba-toggle-btn">Import from The Blue Alliance</button>
+      <button class="tab-btn" id="epa-toggle-btn">Add EPA from Statbotics</button>
+    </div>
+
+    <div class="tba-panel hidden" id="epa-panel">
+      <div class="field-row">
+        <div class="field">
+          <label for="epa-event-key">Event key</label>
+          <input type="text" id="epa-event-key" placeholder="e.g. 2026ausc">
+        </div>
+      </div>
+      <button class="btn-secondary" id="epa-fetch-btn" style="margin-top:12px;">Fetch event EPA ranking</button>
+      <div id="epa-status"></div>
+      <div class="tba-note">
+        Pulls every team's EPA (Expected Points Added) at that event from <a href="https://www.statbotics.io" target="_blank" rel="noopener">Statbotics</a> in a single request, then shows it next to matching team names during ranking. Same event key format as the TBA import above. No API key needed.
+      </div>
+    </div>
+
+    <div class="tba-panel hidden" id="tba-panel">
+      <div class="field-row">
+        <div class="field">
+          <label for="tba-event-key">Event key</label>
+          <input type="text" id="tba-event-key" placeholder="e.g. 2026casj">
+        </div>
+        <div class="field">
+          <label for="tba-api-key">Your TBA API key</label>
+          <input type="text" id="tba-api-key" placeholder="Read API key" autocomplete="off">
+        </div>
+      </div>
+      <button class="btn-secondary" id="tba-import-btn" style="margin-top:12px;">Fetch team list</button>
+      <div id="tba-status"></div>
+      <div class="tba-note">
+        Find the event key in a TBA event URL (thebluealliance.com/event/<b>2026casj</b>). Get a free read-only API key from your <a href="https://www.thebluealliance.com/account" target="_blank" rel="noopener">TBA account page</a> — it's only used here in your browser, never sent anywhere else. This pulls the list, but doesn't auto-start, so you can check it over first.
+      </div>
+    </div>
+
+    <div id="err"></div>
+    <button class="btn-primary" id="start-btn">Start ranking</button>
+  </div>
+
+  <!-- SCREEN 2: COMPARISON -->
+  <div class="card hidden" id="screen-compare">
+    <div class="progress-row">
+      <span class="progress-label" id="progress-label">Comparison 1</span>
+      <button class="btn-ghost" id="undo-btn">Undo last pick</button>
+    </div>
+    <p class="prompt">Which team would you rather have as an alliance partner?</p>
+    <div class="vs-row">
+      <button class="team-btn" id="team-a-btn">
+        <span class="team-num" id="team-a-num">0000</span>
+        <span class="team-name" id="team-a-name"></span>
+        <span class="team-epa" id="team-a-epa"></span>
+        <span class="team-pick">tap to pick</span>
+      </button>
+      <div class="vs-divider">VS</div>
+      <button class="team-btn" id="team-b-btn">
+        <span class="team-num" id="team-b-num">0000</span>
+        <span class="team-name" id="team-b-name"></span>
+        <span class="team-epa" id="team-b-epa"></span>
+        <span class="team-pick">tap to pick</span>
+      </button>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+  </div>
+
+  <!-- SCREEN 3: RESULTS -->
+  <div class="card hidden" id="screen-results">
+    <p class="prompt" style="margin-bottom:14px;">Your picklist, best partner first.</p>
+    <ol class="results" id="results-list"></ol>
+    <div class="actions">
+      <button class="btn-secondary" id="copy-btn">Copy list</button>
+      <button class="btn-secondary" id="restart-btn">Start a new list</button>
+      <span class="copied hidden" id="copied-msg">Copied</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var els = {
+    input: document.getElementById('team-input'),
+    err: document.getElementById('err'),
+    startBtn: document.getElementById('start-btn'),
+    screenInput: document.getElementById('screen-input'),
+    screenCompare: document.getElementById('screen-compare'),
+    screenResults: document.getElementById('screen-results'),
+    progressLabel: document.getElementById('progress-label'),
+    progressFill: document.getElementById('progress-fill'),
+    teamABtn: document.getElementById('team-a-btn'),
+    teamBBtn: document.getElementById('team-b-btn'),
+    teamANum: document.getElementById('team-a-num'),
+    teamBNum: document.getElementById('team-b-num'),
+    teamAName: document.getElementById('team-a-name'),
+    teamBName: document.getElementById('team-b-name'),
+    teamAEpa: document.getElementById('team-a-epa'),
+    teamBEpa: document.getElementById('team-b-epa'),
+    epaToggleBtn: document.getElementById('epa-toggle-btn'),
+    epaPanel: document.getElementById('epa-panel'),
+    epaEventKey: document.getElementById('epa-event-key'),
+    epaFetchBtn: document.getElementById('epa-fetch-btn'),
+    epaStatus: document.getElementById('epa-status'),
+    undoBtn: document.getElementById('undo-btn'),
+    resultsList: document.getElementById('results-list'),
+    copyBtn: document.getElementById('copy-btn'),
+    restartBtn: document.getElementById('restart-btn'),
+    copiedMsg: document.getElementById('copied-msg'),
+    fileInput: document.getElementById('file-input'),
+    tbaToggleBtn: document.getElementById('tba-toggle-btn'),
+    tbaPanel: document.getElementById('tba-panel'),
+    tbaEventKey: document.getElementById('tba-event-key'),
+    tbaApiKey: document.getElementById('tba-api-key'),
+    tbaImportBtn: document.getElementById('tba-import-btn'),
+    tbaStatus: document.getElementById('tba-status')
+  };
+
+  var state = null; // set on start
+
+  function estimateTotalComparisons(n){
+    // log2(n!) is the information-theoretic minimum comparisons for a full sort;
+    // merge-insertion sort lands within a handful of comparisons of this.
+    var s = 0;
+    for (var i = 2; i <= n; i++) s += Math.log2(i);
+    return Math.max(Math.ceil(s), n - 1);
+  }
+
+  // ---- Ford-Johnson (merge insertion) sort, generator-driven so the UI can pause for a human answer ----
+  function* mergeInsertionSortGen(arr){
+    // Returns ascending order: least preferred first, most preferred last.
+    if (arr.length <= 1) return arr.slice();
+    if (arr.length === 2){
+      var aBetter = yield { a: arr[0], b: arr[1] };
+      return aBetter ? [arr[1], arr[0]] : [arr[0], arr[1]];
+    }
+
+    var n = arr.length;
+    var odd = null;
+    var work = arr;
+    if (n % 2 === 1){
+      odd = arr[n - 1];
+      work = arr.slice(0, n - 1);
+    }
+
+    var winners = [];
+    var loserOfWinner = new Map();
+    for (var i = 0; i < work.length; i += 2){
+      var x = work[i], y = work[i + 1];
+      var xBetter = yield { a: x, b: y };
+      var w = xBetter ? x : y;
+      var l = xBetter ? y : x;
+      winners.push(w);
+      loserOfWinner.set(w, l);
+    }
+
+    var sortedWinners = yield* mergeInsertionSortGen(winners);
+
+    var b1 = loserOfWinner.get(sortedWinners[0]);
+    var chain = [b1].concat(sortedWinners);
+
+    var remaining = [];
+    for (var k = 1; k < sortedWinners.length; k++){
+      remaining.push({ loser: loserOfWinner.get(sortedWinners[k]), winner: sortedWinners[k] });
+    }
+
+    var order = jacobsthalOrder(remaining.length);
+    for (var oi = 0; oi < order.length; oi++){
+      var item = remaining[order[oi]];
+      var winnerPos = chain.indexOf(item.winner);
+      var pos = yield* binaryInsertGen(chain, item.loser, 0, winnerPos);
+      chain.splice(pos, 0, item.loser);
+    }
+
+    if (odd !== null){
+      var pos2 = yield* binaryInsertGen(chain, odd, 0, chain.length);
+      chain.splice(pos2, 0, odd);
+    }
+
+    return chain;
+  }
+
+  function* binaryInsertGen(chain, item, lo, hi){
+    while (lo < hi){
+      var mid = (lo + hi) >> 1;
+      var chainBetter = yield { a: chain[mid], b: item };
+      if (chainBetter) hi = mid; else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  function jacobsthalOrder(count){
+    // Insertion order that keeps each binary-insertion search range as small as possible.
+    if (count <= 0) return [];
+    var jac = [0, 1];
+    while (jac[jac.length - 1] < count + 2){
+      jac.push(jac[jac.length - 1] + 2 * jac[jac.length - 2]);
+    }
+    var order = [];
+    var used = new Array(count + 2).fill(false);
+    for (var k = 2; k < jac.length; k++){
+      var high = Math.min(jac[k], count + 1);
+      var low = jac[k - 1] + 1;
+      for (var label = high; label >= low; label--){
+        if (label >= 2 && label <= count + 1 && !used[label]){
+          order.push(label - 2);
+          used[label] = true;
+        }
+      }
+    }
+    return order;
+  }
+
+  function parseTeamLine(line){
+    // Try to split into columns on tab or comma (spreadsheet-style rows).
+    var cols = null;
+    if (line.indexOf('\t') !== -1){
+      cols = line.split('\t').map(function(c){ return c.trim(); }).filter(Boolean);
+    } else if (line.indexOf(',') !== -1 && !/^[\d,\s]+$/.test(line)){
+      cols = line.split(',').map(function(c){ return c.trim(); }).filter(Boolean);
+    }
+    if (cols && cols.length){
+      var m0 = cols[0].match(/^#?(\d{1,6})\b(.*)$/);
+      if (!m0) return null;
+      var leftover = m0[2].trim().replace(/^[-:.\s]+/, '');
+      return {
+        number: parseInt(m0[1], 10),
+        name: leftover || (cols[1] || '')
+      };
+    }
+    // Plain "1114 - Simbotics", "1114 Simbotics", or bare "1114"
+    var m = line.match(/^#?(\d{1,6})\b(.*)$/);
+    if (!m) return null;
+    return {
+      number: parseInt(m[1], 10),
+      name: m[2].trim().replace(/^[-:.\s]+/, '').trim()
+    };
+  }
+
+  function parseTeams(raw){
+    var seen = {};
+    var teams = [];
+
+    raw.split(/\r?\n/).forEach(function(line){
+      if (!line.trim()) return;
+
+      if (/^[\d,\s]+$/.test(line)){
+        // a line of bare numbers, e.g. "1114, 254 2056"
+        line.split(/[,\s]+/).filter(Boolean).forEach(function(tok){
+          var n = parseInt(tok, 10);
+          if (isNaN(n) || n <= 0 || seen[n]) return;
+          seen[n] = true;
+          teams.push({ number: n, name: '' });
+        });
+        return;
+      }
+
+      var parsed = parseTeamLine(line);
+      if (!parsed || isNaN(parsed.number) || parsed.number <= 0 || seen[parsed.number]) return;
+      seen[parsed.number] = true;
+      teams.push(parsed);
+    });
+
+    return teams;
+  }
+
+  function shuffle(arr){
+    for (var i = arr.length - 1; i > 0; i--){
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+    }
+    return arr;
+  }
+
+  function startRanking(){
+    var raw = els.input.value;
+    var teams = parseTeams(raw);
+    if (teams.length < 2){
+      els.err.textContent = 'Enter at least 2 distinct team numbers.';
+      return;
+    }
+    els.err.textContent = '';
+    shuffle(teams);
+    teams.forEach(function(t){
+      if (t.number in epaCache) t.epa = epaCache[t.number];
+    });
+
+    state = {
+      teams: teams,
+      answers: [],
+      gen: null,
+      pending: null,
+      totalEstimate: estimateTotalComparisons(teams.length)
+    };
+    state.gen = mergeInsertionSortGen(teams);
+    state.pending = state.gen.next();
+
+    els.screenInput.classList.add('hidden');
+    els.screenResults.classList.add('hidden');
+    els.screenCompare.classList.remove('hidden');
+
+    advance();
+  }
+
+  function advance(){
+    if (state.pending.done){
+      finish(state.pending.value.slice().reverse()); // ascending -> best first
+      return;
+    }
+    showComparison();
+  }
+
+  function showComparison(){
+    var pair = state.pending.value;
+    els.teamANum.textContent = pair.a.number;
+    els.teamAName.textContent = pair.a.name || '';
+    els.teamAEpa.textContent = formatEpa(pair.a.epa);
+    els.teamBNum.textContent = pair.b.number;
+    els.teamBName.textContent = pair.b.name || '';
+    els.teamBEpa.textContent = formatEpa(pair.b.epa);
+    els.progressLabel.textContent = 'Comparison ' + (state.answers.length + 1) +
+      ' of ~' + state.totalEstimate;
+    var pct = Math.min(95, Math.round((state.answers.length / state.totalEstimate) * 100));
+    els.progressFill.style.width = pct + '%';
+    els.undoBtn.style.visibility = state.answers.length ? 'visible' : 'hidden';
+  }
+
+  function choose(aIsBetter){
+    state.answers.push(aIsBetter);
+    state.pending = state.gen.next(aIsBetter);
+    advance();
+  }
+
+  function undo(){
+    if (!state.answers.length) return;
+    state.answers.pop();
+    state.gen = mergeInsertionSortGen(state.teams);
+    state.pending = state.gen.next();
+    for (var i = 0; i < state.answers.length; i++){
+      state.pending = state.gen.next(state.answers[i]);
+    }
+    advance();
+  }
+
+  function finish(sorted){
+    state.sorted = sorted;
+    els.screenCompare.classList.add('hidden');
+    els.screenResults.classList.remove('hidden');
+    els.resultsList.innerHTML = '';
+    state.sorted.forEach(function(team){
+      var li = document.createElement('li');
+      var numSpan = document.createElement('span');
+      numSpan.className = 'res-num';
+      numSpan.textContent = team.number;
+      li.appendChild(numSpan);
+      if (team.name){
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'res-name';
+        nameSpan.textContent = team.name;
+        li.appendChild(nameSpan);
+      }
+      if (typeof team.epa === 'number'){
+        var epaSpan = document.createElement('span');
+        epaSpan.className = 'res-epa';
+        epaSpan.textContent = formatEpa(team.epa);
+        li.appendChild(epaSpan);
+      }
+      els.resultsList.appendChild(li);
+    });
+    els.copiedMsg.classList.add('hidden');
+  }
+
+  function copyList(){
+    var text = state.sorted.map(function(team){
+      var line = team.name ? (team.number + ' - ' + team.name) : String(team.number);
+      if (typeof team.epa === 'number') line += ' (' + formatEpa(team.epa) + ')';
+      return line;
+    }).join('\n');
+    var done = function(){
+      els.copiedMsg.classList.remove('hidden');
+      setTimeout(function(){ els.copiedMsg.classList.add('hidden'); }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done, function(){ fallbackCopy(text, done); });
+    } else {
+      fallbackCopy(text, done);
+    }
+  }
+
+  function fallbackCopy(text, done){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch(e){}
+    document.body.removeChild(ta);
+    done();
+  }
+
+  function restart(){
+    els.input.value = '';
+    els.err.textContent = '';
+    els.screenResults.classList.add('hidden');
+    els.screenCompare.classList.add('hidden');
+    els.screenInput.classList.remove('hidden');
+  }
+
+  function handleFileUpload(e){
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(evt){
+      var existing = els.input.value.trim();
+      var incoming = evt.target.result;
+      els.input.value = existing ? (existing + '\n' + incoming) : incoming;
+      els.err.textContent = '';
+    };
+    reader.onerror = function(){
+      els.err.textContent = 'Could not read that file.';
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // allow re-uploading the same file later
+  }
+
+  function toggleTbaPanel(){
+    els.tbaPanel.classList.toggle('hidden');
+  }
+
+  function importFromTba(){
+    var eventKey = els.tbaEventKey.value.trim();
+    var apiKey = els.tbaApiKey.value.trim();
+    els.tbaStatus.className = '';
+    if (!eventKey || !apiKey){
+      els.tbaStatus.textContent = 'Enter both the event key and your API key.';
+      els.tbaStatus.className = 'status-err';
+      return;
+    }
+    els.tbaStatus.textContent = 'Fetching\u2026';
+    var url = 'https://www.thebluealliance.com/api/v3/event/' + encodeURIComponent(eventKey) + '/teams/simple';
+    fetch(url, { headers: { 'X-TBA-Auth-Key': apiKey } })
+      .then(function(res){
+        if (res.status === 401 || res.status === 403){
+          throw new Error('That API key was rejected. Double-check it on your TBA account page.');
+        }
+        if (res.status === 404){
+          throw new Error('No event found for that key. Check the event key (e.g. 2026casj).');
+        }
+        if (!res.ok){
+          throw new Error('The Blue Alliance returned an error (status ' + res.status + ').');
+        }
+        return res.json();
+      })
+      .then(function(data){
+        if (!Array.isArray(data) || !data.length){
+          throw new Error('No teams came back for that event.');
+        }
+        var teams = data
+          .filter(function(t){ return typeof t.team_number === 'number'; })
+          .map(function(t){ return { number: t.team_number, name: t.nickname || '' }; })
+          .sort(function(a,b){ return a.number - b.number; });
+        els.input.value = teams.map(function(t){
+          return t.name ? (t.number + ' - ' + t.name) : String(t.number);
+        }).join('\n');
+        els.tbaStatus.textContent = 'Imported ' + teams.length + ' teams.';
+        els.tbaStatus.className = 'status-ok';
+        els.err.textContent = '';
+      })
+      .catch(function(err){
+        els.tbaStatus.textContent = (err && err.message) ?
+          err.message :
+          'Could not reach The Blue Alliance from here \u2014 paste the list manually instead.';
+        els.tbaStatus.className = 'status-err';
+      });
+  }
+
+  var epaCache = {}; // team number -> epa (number) or null if looked up and unavailable
+
+  function extractEpa(data){
+    if (!data || typeof data !== 'object') return null;
+    var candidates = [
+      data.epa && data.epa.total_points && data.epa.total_points.mean,
+      data.epa && data.epa.breakdown && data.epa.breakdown.total_points,
+      data.epa && data.epa.mean,
+      typeof data.epa === 'number' ? data.epa : undefined,
+      data.norm_epa && data.norm_epa.current,
+      typeof data.norm_epa === 'number' ? data.norm_epa : undefined
+    ];
+    for (var i = 0; i < candidates.length; i++){
+      if (typeof candidates[i] === 'number' && !isNaN(candidates[i])) return candidates[i];
+    }
+    return null;
+  }
+
+  function toggleEpaPanel(){
+    els.epaPanel.classList.toggle('hidden');
+  }
+
+  function fetchEpaForEvent(){
+    var eventKey = els.epaEventKey.value.trim();
+    if (!eventKey){
+      els.epaStatus.textContent = 'Enter an event key.';
+      els.epaStatus.className = 'status-err';
+      return;
+    }
+    els.epaStatus.className = '';
+    els.epaStatus.textContent = 'Fetching\u2026';
+
+    var url = 'https://api.statbotics.io/v3/team_events?event=' + encodeURIComponent(eventKey) + '&limit=100';
+    fetch(url)
+      .then(function(res){
+        if (!res.ok) throw new Error('Statbotics returned an error (status ' + res.status + ').');
+        return res.json();
+      })
+      .then(function(data){
+        if (!Array.isArray(data) || !data.length){
+          throw new Error('No EPA data found for that event key.');
+        }
+        var count = 0;
+        data.forEach(function(rec){
+          var num = typeof rec.team === 'number' ? rec.team : parseInt(rec.team, 10);
+          if (isNaN(num)) return;
+          var epa = extractEpa(rec);
+          if (epa !== null){
+            epaCache[num] = epa;
+            count++;
+          }
+        });
+        els.epaStatus.textContent = 'Got EPA for ' + count + ' teams at that event.';
+        els.epaStatus.className = 'status-ok';
+      })
+      .catch(function(err){
+        els.epaStatus.textContent = (err && err.message) ?
+          err.message :
+          'Could not reach Statbotics from here.';
+        els.epaStatus.className = 'status-err';
+      });
+  }
+
+  function formatEpa(value){
+    return typeof value === 'number' ? ('EPA ' + Math.round(value * 10) / 10) : '';
+  }
+
+  els.epaToggleBtn.addEventListener('click', toggleEpaPanel);
+  els.epaFetchBtn.addEventListener('click', fetchEpaForEvent);
+
+  els.fileInput.addEventListener('change', handleFileUpload);
+  els.tbaToggleBtn.addEventListener('click', toggleTbaPanel);
+  els.tbaImportBtn.addEventListener('click', importFromTba);
+
+  els.startBtn.addEventListener('click', startRanking);
+  els.teamABtn.addEventListener('click', function(){ choose(true); });
+  els.teamBBtn.addEventListener('click', function(){ choose(false); });
+  els.undoBtn.addEventListener('click', undo);
+  els.copyBtn.addEventListener('click', copyList);
+  els.restartBtn.addEventListener('click', restart);
+  els.input.addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) startRanking();
+  });
+})();
+</script>
+</body>
+</html>
