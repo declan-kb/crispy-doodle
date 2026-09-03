@@ -10,10 +10,14 @@
   origin. The #offline-note block below says so on screen.
 
   Sibling files:
-    - style.css           — all CSS, shared with settings.html.
+    - style.css           — all CSS, shared with the pages below.
     - team-list-store.js  — Firebase connection + team-list doc helpers,
                             shared with settings.html. firebaseConfig
                             goes there.
+    - schedule.html       — one team's match schedule and a per-match
+                            preview of everyone's scouting data. Linked
+                            from the tab bar; links back here as
+                            #team=NNNN / #tab=rank (see readStartupHash).
     - settings.html       — team-list admin. Not linked from the tab bar
                             below; see its header for why.
 
@@ -22,7 +26,8 @@
   quals-rank lookups, state, report read/writes, CSV import/export,
   team-list logic, render functions, attachHandlers, startup.
 
-  Two tabs, both over the one shared roster loaded in settings.html:
+  Two tabs plus a link out to schedule.html, all over the one shared
+  roster loaded in settings.html:
     - "Scouting Data" (data)  — every team, scouted or not. Click one to
                                 fill in or edit its single record.
                                 Import CSV bulk-restores from an export.
@@ -332,6 +337,38 @@
     teamListError: null
   };
 
+  // ====================== STARTUP DEEP LINKS ======================
+  // schedule.html links back here as index.html#tab=rank (open the Pick
+  // List) and index.html#team=6996 (open that team's scouting form).
+  // The tab applies immediately; the form can't, since openScoutForm
+  // reads both the report and the roster — so the team is parked here
+  // and opened by maybeOpenPendingTeam() once both have arrived.
+  let pendingOpenTeam = null;
+  let teamListLoaded = false;
+
+  function readStartupHash(){
+    const p = {};
+    location.hash.replace(/^#/, '').split('&').forEach(part => {
+      const i = part.indexOf('=');
+      if(i > 0) p[decodeURIComponent(part.slice(0, i))] = decodeURIComponent(part.slice(i + 1));
+    });
+    if(p.tab === 'rank' || p.tab === 'data') state.tab = p.tab;
+    if(/^\d{1,6}$/.test(p.team || "")){
+      state.tab = 'data';
+      pendingOpenTeam = p.team;
+    }
+  }
+
+  // Called from both listeners; fires once, when the later of the two
+  // lands. openScoutForm() renders, so callers don't need to.
+  function maybeOpenPendingTeam(){
+    if(!pendingOpenTeam || !state.loaded || !teamListLoaded) return false;
+    const team = pendingOpenTeam;
+    pendingOpenTeam = null;
+    openScoutForm(team);
+    return true;
+  }
+
   // Blank form for a team with no report yet. Team name is pre-filled
   // from the roster but stays editable — see saveScoutForm().
   function freshScoutForm(team){
@@ -356,7 +393,7 @@
   function startListening(){
     if(!isConfigured){
       state.loaded = true;
-      render();
+      if(!maybeOpenPendingTeam()) render();
       return;
     }
     const colRef = fb.collection(db, 'pit-reports');
@@ -368,7 +405,7 @@
       rows.sort((a,b)=> (b.timestamp||"").localeCompare(a.timestamp||""));
       state.reports = rows;
       state.loaded = true;
-      render();
+      if(!maybeOpenPendingTeam()) render();
     }, (err)=>{
       state.loaded = true;
       state.loadError = "Couldn't connect to the shared database. Check the Firestore rules and config.";
@@ -766,9 +803,11 @@
       // request, so it runs on every load — it no-ops after the first
       // snapshot unless the event code or country changed.
       loadBulkStats(state.teamList.eventCode, state.teamList.epaCountry, state.teamList.teams);
-      render();
+      teamListLoaded = true;
+      if(!maybeOpenPendingTeam()) render();
     }, (err)=>{
       state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
+      teamListLoaded = true;
       render();
     });
   }
@@ -943,6 +982,7 @@
           <div class="tabs">
             <button class="tab-btn ${state.tab==='data'?'active':''}" data-tab="data">Scouting Data (${state.reports.length})</button>
             <button class="tab-btn ${state.tab==='rank'?'active':''}" data-tab="rank">Pick List${state.teamList.teams.length ? ' ('+state.teamList.teams.length+')' : ''}</button>
+            <a class="tab-btn" href="schedule.html">Match Schedule</a>
           </div>
         </div>
       </div>
@@ -1306,6 +1346,7 @@
   // ====================== STARTUP ======================
   // Paint the loading state, then start both listeners. Neither waits on
   // input, so a refresh always restores what's saved.
+  readStartupHash();
   render();
   startListening();
   subscribeTeamList();

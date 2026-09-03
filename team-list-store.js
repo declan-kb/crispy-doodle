@@ -1,6 +1,7 @@
 // Firebase connection + the 'settings/team-list' doc, shared by
-// index.html and settings.html. The 'pit-reports' collection isn't here;
-// index.html handles it directly via the exported db/fb.
+// index.html, schedule.html and settings.html. The 'pit-reports'
+// collection isn't here; index.html and schedule.html read it directly
+// via the exported db/fb.
 //
 // Setup: create a Firebase project, register a web app, paste its config
 // below, create a Firestore database. Rules (open to anyone with the
