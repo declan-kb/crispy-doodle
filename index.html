@@ -14,35 +14,54 @@
     - team-list-store.js  — Firebase connection + team-list doc helpers,
                             shared with settings.html. firebaseConfig
                             goes there.
+    - pick-list.html      — the same roster ranked by EPA or a custom
+                            order, with do-not-pick, for alliance
+                            selection. Linked from the tab bar; a team
+                            number there links back here as
+                            #team=NNNN (see readStartupHash) to fill in
+                            or edit its scouting data.
     - schedule.html       — one team's match schedule and a per-match
                             preview of everyone's scouting data. Linked
-                            from the tab bar; links back here as
-                            #team=NNNN / #tab=rank (see readStartupHash).
+                            from the tab bar; links back here the same
+                            way.
     - settings.html       — team-list admin. Not linked from the tab bar
                             below; see its header for why.
 
   This file: <head> links style.css, <body> is an empty #app div, and
-  the module script holds — in order — form option lists, EPA and
-  quals-rank lookups, state, report read/writes, CSV import/export,
-  team-list logic, render functions, attachHandlers, startup.
+  the module script holds — in order — form option lists, state, report
+  read/writes, CSV import/export, team-list logic, render functions,
+  attachHandlers, startup.
 
-  Two tabs plus a link out to schedule.html, all over the one shared
-  roster loaded in settings.html:
-    - "Scouting Data" (data)  — every team, scouted or not. Click one to
-                                fill in or edit its single record.
-                                Import CSV bulk-restores from an export.
-    - "Pick List" (rank)      — the same roster ranked by EPA or a custom
-                                order, with do-not-pick.
+  Scouting Data — the event's teams, scouted or not, over the one shared
+  roster loaded in settings.html. Click one to fill in or edit its
+  single record. Import CSV bulk-restores from an export. Pick List and
+  Match Schedule are separate pages (see above), linked from the tab
+  bar.
 
   Firestore:
     - 'pit-reports': one doc per team, keyed by team number. That key is
       what makes one-report-per-team structural rather than a rule to
       remember. settings.html doesn't touch this collection.
-    - 'settings/team-list': the roster, plus do-not-pick and picked
-      marks, custom order, event code, and EPA/quals-rank caches. One
-      document, since there's only ever one list. EPA and quals rank are
-      cached rather than imported — quals rank shifts as matches are
-      played, so both are fetched live.
+    - 'settings/event-index': every configured event's settings, and
+      which one is active. This page follows the active event; only
+      settings.html changes it.
+    - 'settings/event--<id>': that event's roster, plus do-not-pick and
+      picked marks, custom order, and EPA/quals-rank caches. One doc per
+      event, so switching events doesn't overwrite the last one's pick
+      list. EPA and quals rank are cached rather than imported — quals
+      rank shifts as matches are played, so both are fetched live.
+
+    A pit report is NOT scoped to an event: a robot is mostly the same
+    machine from one competition to the next, so a report follows its
+    team. It records the event it was collected at, and a report from a
+    different event than the active one is tagged in the tables rather
+    than hidden.
+
+    Which teams are *listed*, though, is scoped: Scouting Data shows the
+    active event's roster, so a team scouted elsewhere and not attending
+    this event doesn't appear. Selecting "All scouted teams" in
+    settings.html makes ALL_TEAMS_EVENT_ID the active event instead,
+    which lists every team that has a report — see mergedTeamRows.
 
   render() rebuilds all of #app from `state`, then attachHandlers()
   rebinds listeners. New interactive elements need a handler there.
@@ -55,6 +74,7 @@
 <title>Pit Scout — REBUILT 2026</title>
 <link rel="icon" type="image/png" href="Circular Logo.png">
 <link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 </head>
 <body>
 <div id="app"></div>
@@ -97,12 +117,14 @@
 </script>
 
 <script type="module">
-  // Firebase connection and team-list doc helpers, shared with
-  // settings.html. 'pit-reports' is handled here instead, directly
-  // through the exported db/fb.
+  // Firebase connection and event-document helpers, shared with
+  // settings.html and schedule.html. 'pit-reports' is handled here
+  // instead, directly through the exported db/fb.
   import {
-    db, fb, isConfigured, esc, teamCellClass, DEFAULT_EPA_COUNTRY,
-    subscribeTeamListStore, saveTeamListStore
+    db, fb, isConfigured, esc, teamCellClass,
+    normalizeEvent, activeEventOf, activeEventTitle, isAllTeamsEvent,
+    subscribeEventIndexStore, subscribeEventDataStore, saveEventDataStore,
+    syncMeta, mergeSyncMeta, syncBadgeHtml
   } from './team-list-store.js';
 
   if(!isConfigured) document.getElementById('setup-banner').style.display = 'block';
@@ -119,10 +141,6 @@
   const CLIMB_LEVEL_OPTS = ["None","Level 1","Level 2","Level 3","Unknown"];
   const SCOUT_STATUS_OPTS = ["Pre-scouted","Pit-scouted","Match-scouted"];
 
-  // Pick List spots that get a rank number: 8 captains + 8 first picks
-  // + 8 second picks. Teams past this still show, just unnumbered.
-  const TOP_RANKED_COUNT = 24;
-
   // Every saved field, as [key, label]. Sets CSV column order and
   // labels; a new form field needs an entry here to be exported.
   const FIELDS_META = [
@@ -137,182 +155,22 @@
     ["timestamp","Submitted"], ["updatedAt","Last Updated"]
   ];
 
-  // ================= STATBOTICS EPA + QUALS RANK =================
-  // Both numbers for the whole roster, fetched in ONE request rather
-  // than one per team. Which request depends on whether Statbotics
-  // knows the event:
-  //
-  //   event code set -> team_events?event=   EPA *and* quals rank, and
-  //                     it covers visiting teams from overseas too.
-  //   otherwise      -> team_years?country=  EPA only, for offseason
-  //                     events Statbotics doesn't track at all.
-  //
-  // Between them these cover every team at both kinds of event, so
-  // there's no per-team fallback — see the commented-out ensureEPA /
-  // ensureQualRank below if one is ever needed again. A roster team in
-  // neither result just shows "—".
-  //
-  // Sourced from team_year (not team_event) in the country case on
-  // purpose: EPA is one continuous rating and team_year reports it as
-  // of a team's most recent event, so a team that played champs after
-  // the event being scouted shows its current strength — up to ~40
-  // points above its snapshot from that event, which is the number
-  // worth ranking on at an offseason event.
-  //
-  // Both caches sit outside `state` — they're lookups, not report data
-  // — keyed by team number: epaCache { "254": {status:"ok", epa:51.7,
-  // percentile:0.997} }, qualRankCache { "254": {status:"ok", rank:3,
-  // eventCode:"2026casf"} }. The eventCode on a rank entry means
-  // changing the event invalidates stale ranks. Results persist to the
-  // team-list doc's `epa` / `qualRank` fields, so a page load renders
-  // from cache while the refetch is in flight.
-  const EPA_YEAR = 2026;
-  let epaCache = {};
-  let qualRankCache = {};
-
-  // The event|country the bulk fetch last ran for, so repeat snapshots
-  // don't refire it, plus an in-flight flag.
-  let bulkState = { key: null, pending: false };
-
-  // Fills both caches and persists the result as a single updateDoc.
-  // Runs on every team-list snapshot and on the refresh button.
-  async function loadBulkStats(eventCode, country, rosterTeams){
-    const ev = (eventCode||"").trim();
-    const c = (country||"").trim();
-    const key = ev + "|" + c;
-    if(bulkState.pending || bulkState.key === key) return;
-    bulkState = { key, pending: true };
-    const roster = new Set((rosterTeams||[]).map(t => String(t.team)));
-    const patch = {};
-    try{
-      // A 404 here means Statbotics has no such event — an offseason
-      // one, or a typo'd code — so fall through to the country lookup
-      // rather than leaving the Pick List with no EPA at all.
-      let rows = [];
-      if(ev){
-        const res = await fetch(`https://api.statbotics.io/v3/team_events?event=${encodeURIComponent(ev)}&limit=1000`);
-        rows = res.ok ? await res.json() : [];
-      }
-      if(rows.length){
-        rows.forEach(row => {
-          const team = String(row.team);
-          const epa = row.epa ? row.epa.total_points : null;
-          const rank = row.record && row.record.qual ? row.record.qual.rank : null;
-          // No percentile on team_event — only team_year ranks teams
-          // against the whole field. The cell just omits it.
-          epaCache[team] = { status: "ok", epa, percentile: null };
-          qualRankCache[team] = { status: "ok", rank, eventCode: ev };
-          // Cache everyone in memory (free, and covers roster additions
-          // without another fetch) but only persist roster teams, so the
-          // doc's maps keep mirroring the list.
-          if(!roster.has(team)) return;
-          if(epa != null) patch['epa.' + team] = { epa, percentile: null };
-          if(rank != null) patch['qualRank.' + team] = { rank, eventCode: ev };
-        });
-      }else if(c){
-        const res = await fetch(`https://api.statbotics.io/v3/team_years?year=${EPA_YEAR}&country=${encodeURIComponent(c)}&limit=1000`);
-        if(!res.ok) throw new Error("country lookup failed");
-        (await res.json()).forEach(row => {
-          const team = String(row.team);
-          const epa = row.epa ? row.epa.total_points : null;
-          const percentile = row.epa && row.epa.ranks ? row.epa.ranks.total.percentile : null;
-          epaCache[team] = { status: "ok", epa, percentile };
-          if(roster.has(team) && epa != null) patch['epa.' + team] = { epa, percentile };
-        });
-      }
-      bulkState.pending = false;
-      render();
-      saveBulkStats(patch);
-    }catch(e){
-      // Non-fatal and self-healing: clearing `key` lets the next
-      // snapshot retry. The Pick List renders from whatever's cached.
-      bulkState = { key: null, pending: false };
-      console.warn('Bulk Statbotics lookup failed', e);
-      render();
-    }
-  }
-
-  // The whole bulk result in one updateDoc. Dotted paths, so it merges
-  // into the `epa` / `qualRank` maps instead of replacing them.
-  // Non-fatal — a failure just means no cache for next time.
-  async function saveBulkStats(patch){
-    if(!isConfigured || !Object.keys(patch).length) return;
-    try{
-      const ref = fb.doc(db, 'settings', 'team-list');
-      await fb.updateDoc(ref, Object.assign({ updatedAt: new Date().toISOString() }, patch));
-    }catch(e){
-      console.warn('Could not persist bulk Statbotics lookup', e);
-    }
-  }
-
-  // ---- Per-team fallbacks, retired ----
-  // Superseded by loadBulkStats above: one request per team meant ~40
-  // requests and ~40 Firestore writes every load and every refresh, and
-  // the two bulk lookups now cover every team at both kinds of event.
-  // Kept (disabled) in case a roster ever spans teams that neither
-  // covers — to restore, uncomment and call from epaCellHtml /
-  // qualRankCellHtml, guarded on bulkState.pending so they don't race
-  // the bulk fetch.
-  //
-  // function ensureEPA(teamNumber){
-  //   const team = (teamNumber||"").trim();
-  //   if(!team || epaCache[team]) return;
-  //   epaCache[team] = { status: "loading" };
-  //   fetch(`https://api.statbotics.io/v3/team_year/${encodeURIComponent(team)}/${EPA_YEAR}`)
-  //     .then(res => { if(!res.ok) throw new Error("not found"); return res.json(); })
-  //     .then(data => {
-  //       const entry = {
-  //         status: "ok",
-  //         epa: data && data.epa ? data.epa.total_points : null,
-  //         percentile: data && data.epa && data.epa.ranks ? data.epa.ranks.total.percentile : null
-  //       };
-  //       epaCache[team] = entry;
-  //       render();
-  //       if(entry.epa != null) saveTeamStat('epa', team, { epa: entry.epa, percentile: entry.percentile });
-  //     })
-  //     .catch(()=>{ epaCache[team] = { status: "error" }; render(); });
-  // }
-  //
-  // function ensureQualRank(teamNumber){
-  //   const team = (teamNumber||"").trim();
-  //   if(!team) return;
-  //   const eventCode = (state.teamList.eventCode||"").trim();
-  //   if(!eventCode){ qualRankCache[team] = { status: "no-event" }; return; }
-  //   const cached = qualRankCache[team];
-  //   if(cached && cached.eventCode === eventCode) return;
-  //   qualRankCache[team] = { status: "loading", eventCode };
-  //   fetch(`https://api.statbotics.io/v3/team_event/${encodeURIComponent(team)}/${encodeURIComponent(eventCode)}`)
-  //     .then(res => { if(!res.ok) throw new Error("not found"); return res.json(); })
-  //     .then(data => {
-  //       const entry = {
-  //         status: "ok",
-  //         rank: data && data.record && data.record.qual ? data.record.qual.rank : null,
-  //         eventCode
-  //       };
-  //       qualRankCache[team] = entry;
-  //       render();
-  //       if(entry.rank != null) saveTeamStat('qualRank', team, { rank: entry.rank, eventCode });
-  //     })
-  //     .catch(()=>{ qualRankCache[team] = { status: "error", eventCode }; render(); });
-  // }
-  //
-  // async function saveTeamStat(field, team, entry){
-  //   if(!isConfigured) return;
-  //   try{
-  //     const ref = fb.doc(db, 'settings', 'team-list');
-  //     await fb.updateDoc(ref, { [field + '.' + team]: entry, updatedAt: new Date().toISOString() });
-  //   }catch(e){
-  //     console.warn('Could not persist ' + field + ' for team ' + team, e);
-  //   }
-  // }
-
   // ====================== APP STATE ======================
   // render() builds HTML from this; handlers mutate it and call render().
   let state = {
-    tab: "data",              // "data" | "rank" — which top-level tab is showing
     reports: [],               // one per team, doc id = team number; synced by startListening()
     loaded: false,             // first snapshot (or no-config fallback) has arrived
+    indexLoaded: false,        // first event-index snapshot has arrived — until then the topbar says "Loading…" rather than naming an event it doesn't know yet
     loadError: null,           // set if the reports listener fails
+
+    // {fromCache, hasPendingWrites} merged across the reports, event-index
+    // and roster listeners — drives the topbar's Offline/Syncing badge.
+    // Never trust-by-default: starts as "not live" until a real snapshot
+    // says otherwise.
+    reportsSync: { fromCache: true, hasPendingWrites: false },
+    indexSync: { fromCache: true, hasPendingWrites: false },
+    dataSync: { fromCache: true, hasPendingWrites: false },
+    saveNotice: null,          // {type:"ok"|"err", text} shown above the list after a save that closed before the server confirmed it
 
     // ---- Scouting Data tab: list filters ----
     search: "",
@@ -327,22 +185,20 @@
     scoutSaving: false,
     scoutSaveMsg: null,        // {type:"ok"|"err", text} under the Save button
 
-    // ---- Pick List tab: list filters ----
-    rankSearch: "",
-    rankHideDNP: false,
-    rankHidePicked: false,
+    // ---- Events, synced from 'settings/event-index' ----
+    index: { activeEventId: "", events: {}, tbaKey: "" },
+    event: normalizeEvent(null),   // the active event's settings
 
-    // ---- The shared roster, synced from 'settings/team-list' ----
-    teamList: { teams: [], doNotPick: {}, picked: {}, order: [], eventLabel: "", epaCountry: DEFAULT_EPA_COUNTRY },
+    // ---- The active event's roster, synced from its own doc ----
+    teamList: { teams: [], doNotPick: {}, picked: {}, order: [] },
     teamListError: null
   };
 
   // ====================== STARTUP DEEP LINKS ======================
-  // schedule.html links back here as index.html#tab=rank (open the Pick
-  // List) and index.html#team=6996 (open that team's scouting form).
-  // The tab applies immediately; the form can't, since openScoutForm
-  // reads both the report and the roster — so the team is parked here
-  // and opened by maybeOpenPendingTeam() once both have arrived.
+  // pick-list.html and schedule.html both link back here as
+  // index.html#team=6996 to open that team's scouting form. openScoutForm
+  // reads both the report and the roster, so the team is parked here and
+  // opened by maybeOpenPendingTeam() once both have arrived.
   let pendingOpenTeam = null;
   let teamListLoaded = false;
 
@@ -352,9 +208,7 @@
       const i = part.indexOf('=');
       if(i > 0) p[decodeURIComponent(part.slice(0, i))] = decodeURIComponent(part.slice(i + 1));
     });
-    if(p.tab === 'rank' || p.tab === 'data') state.tab = p.tab;
     if(/^\d{1,6}$/.test(p.team || "")){
-      state.tab = 'data';
       pendingOpenTeam = p.team;
     }
   }
@@ -397,7 +251,7 @@
       return;
     }
     const colRef = fb.collection(db, 'pit-reports');
-    fb.onSnapshot(colRef, (snapshot)=>{
+    fb.onSnapshot(colRef, { includeMetadataChanges: true }, (snapshot)=>{
       const rows = [];
       snapshot.forEach(docSnap=>{
         rows.push(Object.assign({ id: docSnap.id }, docSnap.data()));
@@ -405,6 +259,7 @@
       rows.sort((a,b)=> (b.timestamp||"").localeCompare(a.timestamp||""));
       state.reports = rows;
       state.loaded = true;
+      state.reportsSync = syncMeta(snapshot);
       if(!maybeOpenPendingTeam()) render();
     }, (err)=>{
       state.loaded = true;
@@ -437,30 +292,72 @@
     return state.reports.find(r => r.id === team);
   }
 
-  // Scout-status badge, shared by renderTable and renderRankTable. Each
+  // Scout-status badge, used by renderTable. Each
   // status is matched exactly and anything else renders as-written, so
   // reports saved before the statuses were renamed (the old "Scouted at
   // event", a hand-edited import saying "Scouted") still show their own
   // text rather than being silently relabelled.
   function statusTagHtml(rep){
     if(!rep || !rep.status) return `<span class="tag" style="opacity:0.55;">Not scouted</span>`;
-    if(rep.status === 'Pre-scouted') return `<span class="tag prescouted">Pre-scouted</span>`;
-    if(rep.status === 'Pit-scouted') return `<span class="tag pit-scouted">Pit-scouted</span>`;
-    if(rep.status === 'Match-scouted') return `<span class="tag match-scouted">Match-scouted</span>`;
-    return `<span class="tag">${esc(rep.status)}</span>`;
+    let tag;
+    if(rep.status === 'Pre-scouted') tag = `<span class="tag prescouted">Pre-scouted</span>`;
+    else if(rep.status === 'Pit-scouted') tag = `<span class="tag pit-scouted">Pit-scouted</span>`;
+    else if(rep.status === 'Match-scouted') tag = `<span class="tag match-scouted">Match-scouted</span>`;
+    else tag = `<span class="tag">${esc(rep.status)}</span>`;
+    return tag + otherEventTagHtml(rep);
   }
 
-  // The roster plus any team that has a report but was removed from the
-  // list, so removing a team drops it from Pick List without hiding
-  // collected data. Report ids must look like a team number (\d{1,6}) —
-  // old test docs with random Firestore ids aren't teams.
+  // Pit reports aren't scoped to an event — a robot is mostly the same
+  // machine from one competition to the next, so its report follows the
+  // team rather than being re-collected. What changes is how much you
+  // trust it, so a report collected somewhere else is tagged with where.
+  // A report saved before events existed carries no eventId and isn't
+  // tagged: its provenance is unknown, not different.
+  function otherEventTagHtml(rep){
+    if(!rep || !rep.eventId || !state.index.activeEventId) return '';
+    if(rep.eventId === state.index.activeEventId) return '';
+    const where = (rep.eventCode || '').trim() || 'another event';
+    return ` <span class="tag other-event" title="Collected at ${esc(where)}, not at this event — the robot may have changed since">${esc(where)}</span>`;
+  }
+
+  // The active event's roster is what Scouting Data lists: reports are
+  // shared across events, so without this a team scouted at a previous
+  // competition would sit in the list at one it isn't attending.
+  //
+  // Two selections list the off-roster reported teams too:
+  //   - "All scouted teams", the pseudo-event picked in settings.html
+  //     for looking at everything ever collected;
+  //   - no event at all, where there's no roster to filter against and
+  //     hiding everything would just look broken.
+  // Report ids must look like a team number (\d{1,6}) — old test docs
+  // with random Firestore ids aren't teams.
+  // The event id to stamp a saved report with. Blank under "All scouted
+  // teams": that isn't a place a robot was scouted, and stamping it
+  // would have every table tag the report as collected elsewhere.
+  function stampEventId(){
+    const id = state.index.activeEventId;
+    return (!id || isAllTeamsEvent(id)) ? "" : id;
+  }
+
+  function includeOffRosterTeams(){
+    return isAllTeamsEvent(state.index.activeEventId) || !state.index.activeEventId;
+  }
+
   function mergedTeamRows(){
     const byTeam = {};
     state.teamList.teams.forEach(t => { byTeam[t.team] = { team: t.team, teamName: t.teamName }; });
-    state.reports.forEach(r => {
-      if(/^\d{1,6}$/.test(r.id) && !byTeam[r.id]) byTeam[r.id] = { team: r.id, teamName: r.teamName || "" };
-    });
+    if(includeOffRosterTeams()){
+      state.reports.forEach(r => {
+        if(/^\d{1,6}$/.test(r.id) && !byTeam[r.id]) byTeam[r.id] = { team: r.id, teamName: r.teamName || "" };
+      });
+    }
     return Object.values(byTeam).sort((a,b)=> Number(a.team) - Number(b.team));
+  }
+
+  // Reports for the teams currently listed — the tab-bar count, which
+  // would otherwise claim reports the list is hiding.
+  function visibleReportCount(){
+    return mergedTeamRows().filter(t => reportForTeam(t.team)).length;
   }
 
   // Opens the form, pre-filled from an existing report or blank. Since a
@@ -489,6 +386,7 @@
     }
     state.scoutFormTeam = team;
     state.scoutSaveMsg = null;
+    state.saveNotice = null;
     render();
   }
 
@@ -538,25 +436,69 @@
       crossTrench: f.crossTrench || "Unknown",
       climbLevel: f.climbLevel || "Unknown",
       impressions: f.impressions.trim(),
+      // Which event this was collected at. Reports aren't scoped by
+      // event — one per team, across all of them — so this is what lets
+      // the tables flag a report gathered somewhere else. Re-saving a
+      // report at a new event re-stamps it, which is right: it has just
+      // been checked here.
+      eventId: stampEventId(),
+      eventCode: state.event.code || "",
       timestamp: existing ? (existing.timestamp || new Date().toISOString()) : new Date().toISOString()
     };
     if(existing) report.updatedAt = new Date().toISOString();
 
     state.scoutSaving = true; render();
-    try{
-      await fb.setDoc(fb.doc(db, 'pit-reports', team), report);
+
+    // setDoc() applies to the local cache (and this device's own Scouting
+    // Data table, via the pit-reports listener) right away, regardless of
+    // the network — but its promise only resolves once the server has
+    // actually acknowledged the write. Offline, that means the promise
+    // just sits there until reconnection, which could be the rest of the
+    // event. So: give it a couple of seconds to confirm normally: if it
+    // does, close the form as before. If it doesn't, assume it's queued
+    // offline, close the form anyway (the data's already saved locally and
+    // will keep retrying in the background), and say so instead of
+    // leaving "Saving…" stuck on screen.
+    const writePromise = fb.setDoc(fb.doc(db, 'pit-reports', team), report);
+    const confirmed = await Promise.race([
+      writePromise.then(()=>true).catch(()=>false),
+      wait(2500).then(()=>null)   // null = neither confirmed nor failed yet
+    ]);
+
+    if(confirmed === true){
       const listed = state.teamList.teams.find(t => t.team === team);
       if(teamName && listed && listed.teamName !== teamName){
-        await updateTeamName(team, teamName);
+        try{ await updateTeamName(team, teamName); }catch(e){ /* report itself saved fine; name sync can be retried from the list */ }
       }
       state.scoutSaving = false;
       closeScoutForm();
-    }catch(e){
+    } else if(confirmed === false){
       state.scoutSaveMsg = {type:"err", text: "Couldn't save — check your connection and Firestore rules."};
       state.scoutSaving = false;
       render();
+    } else {
+      // Still pending — most likely offline. Close the form (nothing more
+      // to do here) and let the deferred handler below report how it
+      // actually turns out.
+      state.scoutSaving = false;
+      state.saveNotice = {type:"ok", text: `Team ${team}'s report is saved on this device and will sync once you're back online.`};
+      closeScoutForm();
+      writePromise.then(()=>{
+        if(state.saveNotice && state.saveNotice.text.startsWith(`Team ${team}'s report is saved`)){
+          state.saveNotice = {type:"ok", text: `Team ${team}'s report has synced.`};
+          render();
+        }
+      }).catch(()=>{
+        state.saveNotice = {type:"err", text: `Team ${team}'s report couldn't be saved once reconnected — reopen it and save again.`};
+        render();
+      });
     }
   }
+
+  // Small delay, used to give a Firestore write a moment to confirm before
+  // treating it as offline. Not a timeout on the write itself — the write
+  // keeps trying in the background either way.
+  function wait(ms){ return new Promise(res => setTimeout(res, ms)); }
 
   // Deletes the report; the team stays on the roster as "Not scouted".
   // attachHandlers confirms before calling this.
@@ -738,6 +680,11 @@
           crossBump: rawCrossBump,
           crossTrench: rawCrossTrench,
           climbLevel: rawClimbLevel,
+          // An import is data being brought into the event you're on —
+          // an export from a past event, most often — so it's stamped
+          // with the active event like any other save.
+          eventId: stampEventId(),
+          eventCode: state.event.code || "",
           timestamp: get(r, 'timestamp') || new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -769,122 +716,76 @@
     render();
   }
 
-  // ====================== TEAM LIST ======================
-  // Both tabs read state.teamList, synced from 'settings/team-list'.
-  // Do-not-pick, picked, and custom order live in that same doc, being
-  // scoped to the same list. EPA and quals rank don't — they use
-  // epaCache/qualRankCache above. The roster itself is loaded in
-  // settings.html.
+  // ====================== EVENTS + TEAM LIST ======================
+  // state.teamList is synced from the active event's doc. Do-not-pick,
+  // picked, and custom order live in that same doc — this page only
+  // reads them through the roster shape, and never touches them itself;
+  // pick-list.html is where they're set. EPA and quals rank live there
+  // too. Events and their rosters are set up in settings.html; this page
+  // only follows whichever is active.
+  let unsubEventData = ()=>{};
+  let currentEventId = null;
 
-  // Subscribed once at startup — one fixed doc, never re-subscribed.
-  function subscribeTeamList(){
-    subscribeTeamListStore((d)=>{
-      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, picked: d.picked || {}, order: d.order || [], eventLabel: d.eventLabel || "", eventCode: d.eventCode || "", epaCountry: d.epaCountry === undefined ? DEFAULT_EPA_COUNTRY : d.epaCountry };
+  // The index carries every event's settings and which one is active.
+  // Switching events re-subscribes the roster doc underneath.
+  function subscribeEvents(){
+    subscribeEventIndexStore((index, meta)=>{
+      state.index = index;
+      state.indexLoaded = true;
+      state.indexSync = meta;
+      state.event = activeEventOf(index);
       state.teamListError = null;
-      // Hydrate epaCache from the doc so a page load doesn't refetch.
-      // Only fills teams with no local entry, so an in-flight fetch or a
-      // fresher result from this session isn't clobbered.
-      const epaData = d.epa || {};
-      Object.keys(epaData).forEach(team => {
-        if(!epaCache[team]) epaCache[team] = { status: "ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
-      });
-      // Same for quals rank, but only entries fetched for the current
-      // event code — a past event's rank would be wrong, and
-      // ensureQualRank refetches for the new one anyway.
-      const qualRankData = d.qualRank || {};
-      Object.keys(qualRankData).forEach(team => {
-        const entry = qualRankData[team];
-        if(!qualRankCache[team] && entry && entry.eventCode === (d.eventCode||"")){
-          qualRankCache[team] = { status: "ok", rank: entry.rank, eventCode: entry.eventCode };
-        }
-      });
-      // Ahead of the render so `pending` is set before the Pick List
-      // paints. Fresher than the values hydrated above, and only one
-      // request, so it runs on every load — it no-ops after the first
-      // snapshot unless the event code or country changed.
-      loadBulkStats(state.teamList.eventCode, state.teamList.epaCountry, state.teamList.teams);
-      teamListLoaded = true;
+
+      if(index.activeEventId !== currentEventId){
+        currentEventId = index.activeEventId;
+        // Nothing carries across events: a different event means a
+        // different roster (Pick List's EPA/quals-rank caches are its own
+        // concern, over on pick-list.html).
+        state.teamList = { teams: [], doNotPick: {}, picked: {}, order: [] };
+        unsubEventData();
+        // The all-teams pseudo-event has no roster doc: "" gives the
+        // same empty roster without a listener on a document that can
+        // never exist.
+        const dataEventId = isAllTeamsEvent(currentEventId) ? "" : currentEventId;
+        unsubEventData = subscribeEventDataStore(dataEventId, onEventData, ()=>{
+          state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
+          teamListLoaded = true;
+          render();
+        });
+      }
       if(!maybeOpenPendingTeam()) render();
-    }, (err)=>{
-      state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
+    }, ()=>{
+      state.indexLoaded = true;
+      state.teamListError = "Couldn't sync events (check Firestore rules for the 'settings' collection).";
       teamListLoaded = true;
       render();
     });
   }
 
-  // Partial update via the shared store. The subscription above picks
-  // the change back up; callers update state.teamList optimistically.
+  function onEventData(d, meta){
+    state.teamList = {
+      teams: d.teams || [],
+      doNotPick: d.doNotPick || {},
+      picked: d.picked || {},
+      order: d.order || []
+    };
+    state.teamListError = null;
+    state.dataSync = meta || { fromCache: false, hasPendingWrites: false };
+    teamListLoaded = true;
+    if(!maybeOpenPendingTeam()) render();
+  }
+
+  // Partial update to the active event's doc. The subscription above
+  // picks the change back up; callers update state.teamList
+  // optimistically.
   async function saveTeamList(patch){
-    await saveTeamListStore(patch, ()=>{
+    // "All scouted teams" has no roster doc of its own — nothing to
+    // write to, and writing anyway would leave a junk document behind.
+    if(isAllTeamsEvent(state.index.activeEventId)) return;
+    await saveEventDataStore(state.index.activeEventId, patch, ()=>{
       state.teamListError = "Couldn't save the team list — check your connection and Firestore rules.";
       render();
     });
-  }
-
-  // Default pick order: highest EPA first, no-EPA teams last, ties by
-  // team number. Reads epaCache; doesn't fetch.
-  function epaSortCompare(a, b){
-    const ea = epaCache[a] && epaCache[a].status === 'ok' && epaCache[a].epa != null ? epaCache[a].epa : null;
-    const eb = epaCache[b] && epaCache[b].status === 'ok' && epaCache[b].epa != null ? epaCache[b].epa : null;
-    if(ea != null && eb != null) return eb - ea;
-    if(ea != null) return -1;
-    if(eb != null) return 1;
-    return Number(a) - Number(b);
-  }
-
-  // Team numbers in display order: the saved custom order if there is
-  // one, with teams it predates appended by EPA; otherwise an EPA sort.
-  // Recomputed each render so it stays live as EPA fetches land.
-  function displayRankOrder(){
-    const teamKeys = state.teamList.teams.map(t => t.team);
-    if(state.teamList.order && state.teamList.order.length){
-      const known = new Set(teamKeys);
-      const kept = state.teamList.order.filter(t => known.has(t));
-      const extra = teamKeys.filter(t => !kept.includes(t)).sort(epaSortCompare);
-      return kept.concat(extra);
-    }
-    return teamKeys.slice().sort(epaSortCompare);
-  }
-
-  // Swaps a team with its neighbor and saves the result as the custom
-  // order. The first move materializes the EPA sort, so later moves work
-  // against a stable list.
-  function moveTeam(team, dir){
-    const order = displayRankOrder();
-    const idx = order.indexOf(team);
-    const swapIdx = idx + dir;
-    if(idx < 0 || swapIdx < 0 || swapIdx >= order.length) return;
-    const newOrder = order.slice();
-    const tmp = newOrder[idx]; newOrder[idx] = newOrder[swapIdx]; newOrder[swapIdx] = tmp;
-    state.teamList = Object.assign({}, state.teamList, { order: newOrder });
-    render();
-    saveTeamList({ order: newOrder });
-  }
-
-  // Drops any custom order, reverting the list to a plain EPA sort.
-  function resetRankOrder(){
-    state.teamList = Object.assign({}, state.teamList, { order: [] });
-    render();
-    saveTeamList({ order: [] });
-  }
-
-  // Toggles a team's "do not pick" mark.
-  function toggleDNP(team){
-    const current = Object.assign({}, state.teamList.doNotPick);
-    if(current[team]) delete current[team]; else current[team] = true;
-    state.teamList = Object.assign({}, state.teamList, { doNotPick: current });
-    render();
-    saveTeamList({ doNotPick: current });
-  }
-
-  // Marks a team off the board during alliance selection — picked by
-  // anyone, independent of do-not-pick.
-  function togglePicked(team){
-    const current = Object.assign({}, state.teamList.picked);
-    if(current[team]) delete current[team]; else current[team] = true;
-    state.teamList = Object.assign({}, state.teamList, { picked: current });
-    render();
-    saveTeamList({ picked: current });
   }
 
   // Called by saveScoutForm when the name is edited in the form.
@@ -895,65 +796,6 @@
     state.teamList = Object.assign({}, state.teamList, { teams });
     render();
     await saveTeamList({ teams });
-  }
-
-  // Pick List's search and hide toggles over displayRankOrder. Shared by
-  // renderRankTable and exportPickListCSV.
-  function filteredRankRows(){
-    const order = displayRankOrder();
-    let teams = order.map(team => state.teamList.teams.find(t => t.team === team)).filter(Boolean);
-    if(state.rankHideDNP){
-      teams = teams.filter(t => !state.teamList.doNotPick[t.team]);
-    }
-    if(state.rankHidePicked){
-      teams = teams.filter(t => !state.teamList.picked[t.team]);
-    }
-    if(state.rankSearch.trim()){
-      const q = state.rankSearch.trim().toLowerCase();
-      teams = teams.filter(t => {
-        const rep = reportForTeam(t.team);
-        return t.team.toLowerCase().includes(q) ||
-          (t.teamName||"").toLowerCase().includes(q) ||
-          (rep && (rep.teamName||"").toLowerCase().includes(q));
-      });
-    }
-    return teams;
-  }
-
-  // Downloads the filtered pick list: position, team, EPA, scouting
-  // highlights, do-not-pick.
-  function exportPickListCSV(){
-    const rows = filteredRankRows();
-    if(!rows.length) return;
-    const header = ["Pick #","Team #","Team Name","EPA","Event Quals Rank","Do Not Pick","Already Picked","Status","Drivebase","Shooter","Climb","Notes"];
-    const lines = [header.map(csvEscape).join(",")];
-    rows.forEach((t,i)=>{
-      const rep = reportForTeam(t.team);
-      const epaEntry = epaCache[t.team];
-      const epa = epaEntry && epaEntry.status === 'ok' && epaEntry.epa != null ? epaEntry.epa.toFixed(1) : "";
-      const qualRankEntry = qualRankCache[t.team];
-      const qualRank = qualRankEntry && qualRankEntry.status === 'ok' && qualRankEntry.rank != null ? qualRankEntry.rank : "";
-      lines.push([
-        i < TOP_RANKED_COUNT ? i+1 : "", t.team, (rep && rep.teamName) || t.teamName || "", epa, qualRank,
-        state.teamList.doNotPick[t.team] ? "Yes" : "No",
-        state.teamList.picked[t.team] ? "Yes" : "No",
-        rep ? rep.status : "Not scouted",
-        rep ? (rep.drivebase||"") : "",
-        rep ? (rep.shooterType||"") : "",
-        rep ? (rep.climbLevel||"") : "",
-        rep ? (rep.impressions||"") : ""
-      ].map(csvEscape).join(","));
-    });
-    const csv = lines.join("\r\n");
-    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "pick_list.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }
 
   // Pill buttons for a single-select field. `name` must match a key in
@@ -977,21 +819,39 @@
           <div class="brand">
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
-            ${state.teamList.eventLabel ? `<div class="brand-sub">${esc(state.teamList.eventLabel)}</div>` : ''}
+            ${brandSubHtml()}
+            ${syncBadgeHtml(mergeSyncMeta(mergeSyncMeta(state.reportsSync, state.indexSync), state.dataSync))}
           </div>
           <div class="tabs">
-            <button class="tab-btn ${state.tab==='data'?'active':''}" data-tab="data">Scouting Data (${state.reports.length})</button>
-            <button class="tab-btn ${state.tab==='rank'?'active':''}" data-tab="rank">Pick List${state.teamList.teams.length ? ' ('+state.teamList.teams.length+')' : ''}</button>
+            <span class="tab-btn active">Scouting Data (${visibleReportCount()})</span>
+            <a class="tab-btn" href="pick-list.html">Pick List</a>
             <a class="tab-btn" href="schedule.html">Match Schedule</a>
           </div>
         </div>
       </div>
       <div class="wrap">
-        ${!state.loaded ? `<div class="loading-note">Loading scouting data…</div>` : (state.tab==='data' ? renderData() : renderRank())}
+        ${saveNoticeHtml()}
+        ${!state.loaded || !teamListLoaded ? `<div class="loading-note">Loading scouting data…</div>` : renderData()}
         <div class="footnote">Data syncs live to everyone using this app — teammates will see changes appear automatically, and can export the same data.</div>
       </div>
     `;
     attachHandlers();
+  }
+
+  // Toast for a save that closed the form before the server confirmed it
+  // (offline, or just a slow connection) — see saveScoutForm(). Cleared by
+  // the deferred confirm/fail handler, or by opening another save.
+  function saveNoticeHtml(){
+    if(!state.saveNotice) return '';
+    return `<div class="status-msg ${state.saveNotice.type}" style="display:block; margin:0 0 16px 0;">${esc(state.saveNotice.text)}</div>`;
+  }
+
+  // The line under the wordmark: what the app is showing. Blank rather
+  // than a placeholder name when no event is set up at all.
+  function brandSubHtml(){
+    if(!state.indexLoaded) return `<div class="brand-sub">Loading…</div>`;
+    const title = activeEventTitle(state.index);
+    return title ? `<div class="brand-sub">${esc(title)}</div>` : '';
   }
 
   // Scouting Data: the team list, or a scouting form in place of it.
@@ -1004,9 +864,16 @@
 
     let body;
     if(!totalTeams){
+      // Reports exist but every one of them is for a team that isn't on
+      // this event's list — say so, rather than leaving it looking like
+      // the data vanished.
+      const hiddenReports = !includeOffRosterTeams() && state.reports.some(r => /^\d{1,6}$/.test(r.id));
       body = `<div class="empty-state">
         <h3>No teams loaded</h3>
-        <p>Load your event's teams on the settings page (open settings.html) to get started.</p>
+        <p>${state.index.activeEventId
+            ? `Load this event's teams on the settings page (open <code>settings.html</code>) to get started.`
+            : `Set up an event on the settings page (open <code>settings.html</code>) to get started.`}</p>
+        ${hiddenReports ? `<p>There is scouting data saved for teams that aren't on this event's list. Pick <b>All scouted teams</b> on the settings page to see it.</p>` : ''}
       </div>`;
     } else if(!rows.length){
       body = `<div class="empty-state">
@@ -1059,28 +926,6 @@
       return `<tr style="cursor:pointer;" data-open-scout="${esc(t.team)}"><td>${statusCell}</td>${cells}<td class="notes-cell">${esc(notes || '—')}</td></tr>`;
     }).join("");
     return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-  }
-
-  // EPA cell — a pure read of epaCache, which loadBulkStats fills.
-  // Percentile only comes back from the country lookup; the event one
-  // has no field for it, so the cell just omits it there.
-  function epaCellHtml(teamNumber){
-    const entry = epaCache[(teamNumber||"").trim()];
-    if(bulkState.pending && !entry) return `<span class="epa-loading">…</span>`;
-    if(!entry || entry.status === "error" || entry.epa==null) return "—";
-    const pct = entry.percentile!=null ? ` <span class="epa-pct">(${Math.round(entry.percentile*100)}%ile)</span>` : "";
-    return `${entry.epa.toFixed(1)}${pct}`;
-  }
-
-  // Quals-rank cell — a pure read of qualRankCache. Only the event
-  // lookup fills it, so with no event code (or one Statbotics doesn't
-  // have) every row shows "—".
-  function qualRankCellHtml(teamNumber){
-    const entry = qualRankCache[(teamNumber||"").trim()];
-    if(!(state.teamList.eventCode||"").trim()) return `<span title="Set an event code on the settings page to fetch quals rank">—</span>`;
-    if(bulkState.pending && !entry) return `<span class="epa-loading">…</span>`;
-    if(!entry || entry.status === "error" || entry.rank==null) return "—";
-    return `#${entry.rank}`;
   }
 
   // The scouting form, shown while state.scoutFormTeam is set. One
@@ -1175,88 +1020,11 @@
     `;
   }
 
-  // Pick List: filter toolbar plus the ranked table. Roster, order and
-  // do-not-pick all come from state.teamList.
-  function renderRank(){
-    const totalTeams = state.teamList.teams.length;
-    const dnpCount = Object.keys(state.teamList.doNotPick||{}).filter(k => state.teamList.doNotPick[k]).length;
-    const pickedCount = Object.keys(state.teamList.picked||{}).filter(k => state.teamList.picked[k]).length;
-    const errorMsg = state.teamListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.teamListError)}</div>` : '';
-
-    if(!totalTeams){
-      return errorMsg + `<div class="empty-state">
-        <h3>No teams loaded</h3>
-        <p>Load your event's teams on the settings page (open settings.html) to build a pick list.</p>
-      </div>`;
-    }
-
-    const rows = filteredRankRows();
-    const toolbar = `
-      <div class="data-toolbar">
-        <input type="text" id="rank-search" placeholder="Search team # or name" value="${esc(state.rankSearch)}">
-        <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-dnp" ${state.rankHideDNP?'checked':''}><label for="rank-hide-dnp" style="margin:0;">Hide do-not-pick</label></div>
-        <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-picked" ${state.rankHidePicked?'checked':''}><label for="rank-hide-picked" style="margin:0;">Hide picked</label></div>
-        <div class="spacer"></div>
-        <button class="btn-secondary" id="refresh-stats-btn" title="EPA and quals rank are cached — click to re-fetch both from Statbotics">Refresh event data</button>
-        <button class="btn-secondary" id="rank-reset-order-btn">Reset order to EPA</button>
-        <button class="btn-export" id="rank-export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
-      </div>
-      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}${dnpCount ? ` · <b>${dnpCount}</b> marked do-not-pick` : ''}${pickedCount ? ` · <b>${pickedCount}</b> already picked` : ''}</div>
-    `;
-
-    const body = rows.length ? renderRankTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search or filter.</p></div>`;
-    return errorMsg + toolbar + body;
-  }
-
-  // Row actions (reorder, do-not-pick) lead on the left so they're
-  // reachable without scrolling sideways, then rank, team, EPA, quals
-  // rank, status, key scouting fields, notes.
-  function renderRankTable(rows){
-    const head = `<th>Actions</th><th>#</th><th>Team #</th><th>Team Name</th><th title="Statbotics ${EPA_YEAR} EPA">EPA</th><th title="Qualification-match rank at the event (Statbotics only) — needs an event code set on the settings page">Quals Rank</th><th>Status</th><th>Notes</th><th>Drivebase</th><th>Shooter</th><th>Climb</th>`;
-    const body = rows.map((t,i)=>{
-      const rep = reportForTeam(t.team);
-      const isDNP = !!state.teamList.doNotPick[t.team];
-      const isPicked = !!state.teamList.picked[t.team];
-      const name = (rep && rep.teamName) || t.teamName || "—";
-      const notes = rep ? rep.impressions : "";
-      const scoutedCell = statusTagHtml(rep);
-      const rank = i < TOP_RANKED_COUNT ? String(i+1) : '—';
-      const rowClasses = [isDNP ? 'dnp-row' : '', isPicked ? 'picked-row' : '', i === TOP_RANKED_COUNT ? 'rank-cutoff' : ''].filter(Boolean).join(' ');
-      return `
-        <tr class="${rowClasses}">
-          <td class="dnp-actions">
-            <div style="display:flex; gap:6px; align-items:center;">
-              <button class="btn-tiny" data-move-up="${esc(t.team)}" title="Move up">▲</button>
-              <button class="btn-tiny" data-move-down="${esc(t.team)}" title="Move down">▼</button>
-              <button class="btn-tiny ${isDNP?'active':''}" data-toggle-dnp="${esc(t.team)}" title="Toggle do-not-pick">${isDNP?'Unmark DNP':'DNP'}</button>
-              <button class="btn-tiny ${isPicked?'picked-active':''}" data-toggle-picked="${esc(t.team)}" title="Toggle already picked">${isPicked?'Unpick':'Picked'}</button>
-            </div>
-          </td>
-          <td class="dim">${rank}</td>
-          <td class="${teamCellClass('team-cell', t.team)}" style="cursor:pointer;" data-open-team="${esc(t.team)}" title="Fill in / view this team's scouting data">${esc(t.team)}</td>
-          <td>${esc(name)}</td>
-          <td class="dim">${epaCellHtml(t.team)}</td>
-          <td class="dim">${qualRankCellHtml(t.team)}</td>
-          <td>${scoutedCell}</td>
-          <td class="notes-cell">${esc(notes || '—')}</td>
-          <td class="dim">${esc(rep ? (rep.drivebase||'—') : '—')}</td>
-          <td class="dim">${esc(rep ? (rep.shooterType||'—') : '—')}</td>
-          <td class="dim">${esc(rep ? (rep.climbLevel||'—') : '—')}</td>
-        </tr>`;
-    }).join("");
-    return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-  }
-
   // ====================== EVENT HANDLERS ======================
   // render() replaces the DOM, so listeners are rebound here at the end
-  // of it. Handlers are grouped by tab; a new input or button in a
-  // render*() function needs one here.
+  // of it. A new input or button in a render*() function needs one here.
   function attachHandlers(){
-    document.querySelectorAll('.tab-btn').forEach(el=>{
-      el.onclick = ()=>{ state.tab = el.dataset.tab; render(); };
-    });
-
-    if(state.tab==='data' && state.scoutFormTeam){
+    if(state.scoutFormTeam){
       const bind = (id, key) => {
         const el = document.getElementById(id);
         if(el) el.oninput = ()=>{ state.scoutForm[key] = el.value; };
@@ -1289,7 +1057,7 @@
       };
     }
 
-    if(state.tab==='data' && !state.scoutFormTeam){
+    if(!state.scoutFormTeam){
       const searchEl = document.getElementById('search-input');
       if(searchEl) searchEl.oninput = ()=>{ state.search = searchEl.value; render(); };
       const filterEl = document.getElementById('drivebase-filter');
@@ -1312,35 +1080,6 @@
         el.onclick = ()=> openScoutForm(el.dataset.openScout);
       });
     }
-
-    if(state.tab==='rank'){
-      const rankSearchEl = document.getElementById('rank-search');
-      if(rankSearchEl) rankSearchEl.oninput = ()=>{ state.rankSearch = rankSearchEl.value; render(); };
-      const hideDnpEl = document.getElementById('rank-hide-dnp');
-      if(hideDnpEl) hideDnpEl.onchange = ()=>{ state.rankHideDNP = hideDnpEl.checked; render(); };
-      const hidePickedEl = document.getElementById('rank-hide-picked');
-      if(hidePickedEl) hidePickedEl.onchange = ()=>{ state.rankHidePicked = hidePickedEl.checked; render(); };
-      const resetOrderBtn = document.getElementById('rank-reset-order-btn');
-      if(resetOrderBtn) resetOrderBtn.onclick = resetRankOrder;
-      const rankExportBtn = document.getElementById('rank-export-btn');
-      if(rankExportBtn) rankExportBtn.onclick = exportPickListCSV;
-      // One request backs EPA and quals rank both, so one button.
-      const refreshStatsBtn = document.getElementById('refresh-stats-btn');
-      if(refreshStatsBtn) refreshStatsBtn.onclick = ()=>{
-        epaCache = {}; qualRankCache = {};
-        bulkState = { key: null, pending: false };
-        loadBulkStats(state.teamList.eventCode, state.teamList.epaCountry, state.teamList.teams);
-        render();
-      };
-
-      document.querySelectorAll('[data-move-up]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveUp, -1); });
-      document.querySelectorAll('[data-move-down]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveDown, 1); });
-      document.querySelectorAll('[data-toggle-dnp]').forEach(el=>{ el.onclick = ()=> toggleDNP(el.dataset.toggleDnp); });
-      document.querySelectorAll('[data-toggle-picked]').forEach(el=>{ el.onclick = ()=> togglePicked(el.dataset.togglePicked); });
-      document.querySelectorAll('[data-open-team]').forEach(el=>{
-        el.onclick = ()=>{ state.tab = 'data'; openScoutForm(el.dataset.openTeam); };
-      });
-    }
   }
 
   // ====================== STARTUP ======================
@@ -1349,7 +1088,7 @@
   readStartupHash();
   render();
   startListening();
-  subscribeTeamList();
+  subscribeEvents();
 </script>
 </body>
 </html>

@@ -2,18 +2,35 @@
 <!--
   SCOUT — SETTINGS (hidden page)
   ==============================
-  Team-list admin: load/replace/clear the roster, rename or remove
-  teams, set the event code. Not linked from index.html's tab bar — it
-  can wipe the shared list, so it stays off the tab bar people click
-  through during an event. Open it directly and bookmark it.
+  Event admin. Set up as many events as you like — each keeps its own
+  team list, pick order and do-not-pick marks — pick which one everyone
+  else's app is showing, and load/replace/clear that event's roster.
+  Not linked from index.html's tab bar: it can wipe a list and switch
+  the whole team's app to another event, so it stays off the tab bar
+  people click through during a competition. Open it directly and
+  bookmark it.
+
+  Two things this page owns that the other pages only read:
+    - The active event (settings/event-index.activeEventId), which
+      index.html, pick-list.html and schedule.html all follow. The event
+      picker also offers "All scouted teams" (ALL_TEAMS_EVENT_ID) — not
+      an event, but the same kind of choice: making it active tells
+      index.html to list every team that has a report instead of one
+      event's roster. It has no config or roster doc, so the editor and
+      team list below are replaced by an explanation of what it does.
+    - The TBA Read API key, shared through the same doc so a scout's
+      phone never has to type one. Nothing else asks for it any more —
+      schedule.html and pick-list.html work out their own source from
+      the event's settings.
 
   Must be served over http(s) — the GitHub Pages URL, or
   `python3 -m http.server 8000` here. Off disk it renders blank: module
   scripts can't import a sibling .js from a file:// origin. See the
   #offline-note block below.
 
-  Writes the same 'settings/team-list' doc as index.html via
-  team-list-store.js, so changes show up there immediately.
+  Writes the same event documents index.html, pick-list.html and
+  schedule.html read, via team-list-store.js, so changes show up there
+  immediately.
 
   Same shape as index.html: style.css, an empty #app div, and a module
   script holding state, mutations, render functions, attachHandlers,
@@ -26,6 +43,7 @@
 <title>Pit Scout — Settings</title>
 <link rel="icon" type="image/png" href="Circular Logo.png">
 <link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 </head>
 <body>
 <div id="app"></div>
@@ -69,8 +87,12 @@
 
 <script type="module">
   import {
-    isConfigured, esc, readLocal, writeLocal, teamCellClass, DEFAULT_EPA_COUNTRY,
-    subscribeTeamListStore, saveTeamListStore
+    isConfigured, esc, writeLocal, teamCellClass,
+    normalizeEvent, eventTitle, blankEvent, resolveTbaKey,
+    activeEventTitle, isAllTeamsEvent, ALL_TEAMS_EVENT_ID, ALL_TEAMS_LABEL,
+    subscribeEventIndexStore, saveEventIndexStore, saveEventConfig,
+    createEventStore, deleteEventStore,
+    subscribeEventDataStore, saveEventDataStore, fetchEventRoster
   } from './team-list-store.js';
 
   if(!isConfigured){
@@ -79,144 +101,212 @@
 
   // ====================== APP STATE ======================
   let state = {
-    loaded: false,             // first snapshot (or no-config fallback) has arrived
-    teamList: { teams: [], doNotPick: {}, picked: {}, order: [], eventLabel: "", eventCode: "", epaCountry: DEFAULT_EPA_COUNTRY },
-    teamListError: null,
+    loaded: false,             // first index snapshot (or no-config fallback) has arrived
+    index: { activeEventId: "", events: {}, tbaKey: "" },
+    indexError: null,
 
-    settingsEventCode: readLocal('pitscout_last_event', ''), // hydrated from the shared doc on first snapshot
-    eventCodeTouched: false,   // field typed in this session; blocks snapshot hydration
-    settingsSource: "statbotics",  // "statbotics" | "tba" | "manual"
-    tbaKey: readLocal('pitscout_tba_key', ''),                // TBA Read API key, localStorage only
-    settingsLoading: false,
-    settingsError: null,
-    settingsManualInput: "",   // textarea contents for manual team entry
-    settingsSearch: ""
+    // Which event this page is editing. Defaults to the active one, but
+    // they're deliberately separate: setting up next season's event
+    // shouldn't switch every scout's phone off the one being played.
+    // "Make active" is the explicit action for that.
+    editingEventId: "",
+
+    // The edited event's fields, held locally so a snapshot arriving
+    // mid-edit can't yank the text out from under the caret. Seeded when
+    // the edited event changes; committed on blur/Enter.
+    draft: normalizeEvent(null),
+
+    eventData: { teams: [], doNotPick: {}, picked: {}, order: [] },
+    dataError: null,
+
+    tbaKeyDraft: "",
+    confirmDeleteEvent: false,  // second click on Delete event actually deletes
+    showManual: false,          // manual-entry textarea is open
+
+    rosterLoading: false,
+    rosterError: null,
+    manualInput: "",
+    search: ""
   };
 
-  // ====================== TEAM LIST SYNC ======================
-  // Wrappers around team-list-store.js, adding this page's state
-  // assignment and error surfacing.
-  function subscribeTeamList(){
-    subscribeTeamListStore((d)=>{
-      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, picked: d.picked || {}, order: d.order || [], eventLabel: d.eventLabel || "", eventCode: d.eventCode || "", epaCountry: d.epaCountry === undefined ? DEFAULT_EPA_COUNTRY : d.epaCountry };
-      state.teamListError = null;
-      // Show the doc's event code, not this browser's localStorage: a
-      // device that never typed it here would show blank while
-      // index.html's quals-rank lookup uses the saved code. Skipped
-      // once typed in, so a snapshot can't overwrite a live edit.
-      if(!state.eventCodeTouched && d.eventCode) state.settingsEventCode = d.eventCode;
+  // ====================== SYNC ======================
+  // Two subscriptions: the index (every event's config) and the roster
+  // doc of whichever event is being edited. The second is re-subscribed
+  // whenever the edited event changes.
+  let unsubEventData = ()=>{};
+
+  function subscribeIndex(){
+    subscribeEventIndexStore((index)=>{
+      state.index = index;
+      state.indexError = null;
       state.loaded = true;
+      // Follow the active event until the user picks something else to
+      // edit, and recover if the event being edited was deleted
+      // elsewhere.
+      if(!state.editingEventId || !index.events[state.editingEventId]){
+        setEditingEvent(index.activeEventId, { skipRender: true });
+      }
+      if(!state.tbaKeyDraft) state.tbaKeyDraft = resolveTbaKey(index);
       render();
-    }, (err)=>{
-      state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
+    }, ()=>{
+      state.indexError = "Couldn't sync events (check Firestore rules for the 'settings' collection).";
       state.loaded = true;
       render();
     });
   }
 
-  function saveTeamList(patch){
-    return saveTeamListStore(patch, (e)=>{
-      state.teamListError = "Couldn't save the team list — check your connection and Firestore rules.";
+  function setEditingEvent(eventId, opts){
+    state.editingEventId = eventId || "";
+    state.draft = normalizeEvent(state.index.events[state.editingEventId]);
+    state.confirmDeleteEvent = false;
+    state.rosterError = null;
+    state.search = "";
+    state.manualInput = "";
+    state.eventData = { teams: [], doNotPick: {}, picked: {}, order: [] };
+    unsubEventData();
+    // "All scouted teams" has no roster doc — "" gives the same empty
+    // roster without a listener on a document that can never exist.
+    unsubEventData = subscribeEventDataStore(isAllTeamsEvent(state.editingEventId) ? "" : state.editingEventId, (d)=>{
+      state.eventData = {
+        teams: d.teams || [],
+        doNotPick: d.doNotPick || {},
+        picked: d.picked || {},
+        order: d.order || []
+      };
+      state.dataError = null;
+      render();
+    }, ()=>{
+      state.dataError = "Couldn't sync this event's team list.";
+      render();
+    });
+    if(!(opts && opts.skipRender)) render();
+  }
+
+  function saveData(patch){
+    return saveEventDataStore(state.editingEventId, patch, ()=>{
+      state.dataError = "Couldn't save the team list — check your connection and Firestore rules.";
       render();
     });
   }
 
+  function saveConfig(fields){
+    return saveEventConfig(state.editingEventId, fields, ()=>{
+      state.indexError = "Couldn't save the event — check your connection and Firestore rules.";
+      render();
+    });
+  }
+
+  // ====================== EVENT ACTIONS ======================
+  async function createEvent(){
+    const id = await createEventStore(blankEvent(), ()=>{
+      state.indexError = "Couldn't create the event — check your connection and Firestore rules.";
+      render();
+    });
+    // Optimistic, so the new event is selectable before the snapshot
+    // lands; the snapshot then confirms it.
+    state.index = Object.assign({}, state.index, {
+      events: Object.assign({}, state.index.events, { [id]: normalizeEvent(blankEvent()) })
+    });
+    setEditingEvent(id);
+    // The first event configured has nothing to compete with, so make it
+    // active rather than making the user press a second button.
+    if(Object.keys(state.index.events).length === 1) await saveEventIndexStore({ activeEventId: id });
+  }
+
+  async function makeEditedEventActive(){
+    await saveEventIndexStore({ activeEventId: state.editingEventId }, ()=>{
+      state.indexError = "Couldn't switch the active event.";
+      render();
+    });
+    state.index = Object.assign({}, state.index, { activeEventId: state.editingEventId });
+    render();
+  }
+
+  // Two-click rather than confirm(): confirm() silently no-ops in
+  // standalone/home-screen-PWA contexts, which makes a button look
+  // broken on a phone with the app added to the home screen.
+  async function deleteEditedEvent(){
+    if(!state.confirmDeleteEvent){
+      state.confirmDeleteEvent = true;
+      render();
+      return;
+    }
+    const id = state.editingEventId;
+    const remaining = Object.assign({}, state.index.events);
+    delete remaining[id];
+    await deleteEventStore(id, ()=>{
+      state.indexError = "Couldn't delete the event.";
+      render();
+    });
+    // Hand the active flag to whatever's left, so the app doesn't land
+    // on an event id that no longer exists.
+    if(state.index.activeEventId === id){
+      const next = Object.keys(remaining)[0] || "";
+      await saveEventIndexStore({ activeEventId: next });
+      state.index = Object.assign({}, state.index, { activeEventId: next });
+    }
+    state.index = Object.assign({}, state.index, { events: remaining });
+    setEditingEvent(state.index.activeEventId || Object.keys(remaining)[0] || "");
+  }
+
+  // The key is shared through the index doc so a scout's phone that has
+  // never typed one still gets offseason schedules; also kept in
+  // localStorage as the fallback for a device offline from the doc.
+  async function saveTbaKey(value){
+    const key = (value||"").trim();
+    writeLocal('pitscout_tba_key', key);
+    state.index = Object.assign({}, state.index, { tbaKey: key });
+    await saveEventIndexStore({ tbaKey: key }, ()=>{
+      state.indexError = "Couldn't save the TBA key.";
+      render();
+    });
+  }
+
+  // ====================== TEAM LIST ACTIONS ======================
   // index.html's scouting form has its own copy of this; both write the
-  // shared list, so either place syncs to the other.
+  // same event doc, so either place syncs to the other.
   async function updateTeamName(team, newName){
     const name = (newName||"").trim();
-    const teams = state.teamList.teams.map(t => t.team===team ? Object.assign({}, t, {teamName:name}) : t);
-    state.teamList = Object.assign({}, state.teamList, { teams });
+    const teams = state.eventData.teams.map(t => t.team===team ? Object.assign({}, t, {teamName:name}) : t);
+    state.eventData = Object.assign({}, state.eventData, { teams });
     render();
-    await saveTeamList({ teams });
-  }
-
-  // Display label for the topbar, e.g. "AUSC 2026". Descriptive only —
-  // never used for Statbotics/TBA lookups, unlike settingsEventCode.
-  async function updateEventLabel(value){
-    const label = (value||"").trim();
-    state.teamList = Object.assign({}, state.teamList, { eventLabel: label });
-    render();
-    await saveTeamList({ eventLabel: label });
-  }
-
-  // Country filter for index.html's bulk EPA prefetch — one Statbotics
-  // request covers every team in it, instead of one request per team.
-  // Blank falls back to per-team lookups, which is also what covers any
-  // team on the roster from outside this country.
-  async function updateEpaCountry(value){
-    const country = (value||"").trim();
-    state.teamList = Object.assign({}, state.teamList, { epaCountry: country });
-    render();
-    await saveTeamList({ epaCountry: country });
-  }
-
-  // Saves the event code without touching the roster, so quals rank can
-  // be pointed at a different event without a reload. loadTeamsFromSource
-  // saves the same field when it does reload.
-  async function updateEventCode(value){
-    const code = (value||"").trim();
-    state.teamList = Object.assign({}, state.teamList, { eventCode: code });
-    render();
-    if(code) writeLocal('pitscout_last_event', code);
-    await saveTeamList({ eventCode: code });
+    await saveData({ teams });
   }
 
   // doNotPick/picked/order may keep a leftover entry for the removed
   // team; Pick List ignores team numbers not in the current roster.
   function removeTeam(team){
-    const teams = state.teamList.teams.filter(t => t.team !== team);
-    state.teamList = Object.assign({}, state.teamList, { teams });
+    const teams = state.eventData.teams.filter(t => t.team !== team);
+    state.eventData = Object.assign({}, state.eventData, { teams });
     render();
-    saveTeamList({ teams });
+    saveData({ teams });
   }
 
-  // Loads a roster from Statbotics (no key) or TBA (needs a Read API
-  // key; covers off-season events Statbotics hasn't indexed). Quals rank
-  // isn't captured — Pick List fetches it live, keyed off the event code
-  // saved below.
+  // Loads the roster for the edited event. No source picker: an
+  // offseason event is only ever on TBA, and everything else is on
+  // Statbotics — see fetchEventRoster. Quals rank isn't captured here;
+  // it's fetched live, keyed off the event code.
   async function loadTeamsFromSource(){
-    const code = state.settingsEventCode.trim();
-    if(!code){ state.settingsError = "Enter an event code."; render(); return; }
-    state.settingsLoading = true; state.settingsError = null; render();
+    if(!state.draft.code.trim()){ state.rosterError = "Enter an event code."; render(); return; }
+    state.rosterLoading = true; state.rosterError = null; render();
     try{
-      let teams = [];
-      if(state.settingsSource === 'statbotics'){
-        const res = await fetch(`https://api.statbotics.io/v3/team_events?event=${encodeURIComponent(code)}`);
-        if(!res.ok) throw new Error("Event not found on Statbotics.");
-        const data = await res.json();
-        if(!Array.isArray(data) || !data.length) throw new Error("No teams found for that event on Statbotics — try TBA or manual entry.");
-        teams = data.map(d => ({ team: String(d.team), teamName: d.team_name || "" }));
-      } else if(state.settingsSource === 'tba'){
-        if(!state.tbaKey.trim()) throw new Error("Enter your TBA Read API key first (get one free at thebluealliance.com/account).");
-        const res = await fetch(`https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(code)}/teams/simple`, {
-          headers: { 'X-TBA-Auth-Key': state.tbaKey.trim() }
-        });
-        if(!res.ok) throw new Error(res.status === 401 ? "Invalid TBA API key." : "Event not found on TBA — check the event code.");
-        const data = await res.json();
-        if(!Array.isArray(data) || !data.length) throw new Error("No teams found for that event on TBA.");
-        teams = data.map(d => ({ team: String(d.team_number), teamName: d.nickname || "" }));
-      } else {
-        throw new Error("Switch to Manual entry to add teams by hand.");
-      }
-      teams.sort((a,b)=> Number(a.team) - Number(b.team));
-      state.teamList = Object.assign({}, state.teamList, { teams, eventCode: code });
-      writeLocal('pitscout_last_event', code);
-      await saveTeamList({ teams, eventCode: code, source: state.settingsSource });
+      const teams = await fetchEventRoster(state.draft, resolveTbaKey(state.index));
+      state.eventData = Object.assign({}, state.eventData, { teams });
+      await saveData({ teams });
     }catch(e){
-      state.settingsError = e.message || "Couldn't load teams.";
+      state.rosterError = e.message || "Couldn't load teams.";
     }
-    state.settingsLoading = false;
+    state.rosterLoading = false;
     render();
   }
 
   // Merges the manual-entry textarea into the roster without dropping
   // existing teams. One team per line/comma, optionally "1234 Name".
   async function addManualTeamsToList(){
-    const lines = state.settingsManualInput.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+    const lines = state.manualInput.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
     if(!lines.length) return;
     const byTeam = {};
-    state.teamList.teams.forEach(t => { byTeam[t.team] = t; });
+    state.eventData.teams.forEach(t => { byTeam[t.team] = t; });
     lines.forEach(line => {
       const m = line.match(/^(\d{1,6})\s*[-:]?\s*(.*)$/);
       if(!m) return;
@@ -225,32 +315,26 @@
       byTeam[team] = { team, teamName: name };
     });
     const teams = Object.values(byTeam).sort((a,b)=> Number(a.team) - Number(b.team));
-    const code = state.settingsEventCode.trim();
-    // Save the event code anyway, so quals rank works for a manual
-    // roster the same as a loaded one.
-    state.teamList = Object.assign({}, state.teamList, { teams }, code ? { eventCode: code } : {});
-    state.settingsManualInput = "";
-    state.settingsError = null;
-    if(code) writeLocal('pitscout_last_event', code);
-    await saveTeamList(Object.assign({ teams, source: 'manual' }, code ? { eventCode: code } : {}));
+    state.eventData = Object.assign({}, state.eventData, { teams });
+    state.manualInput = "";
+    state.rosterError = null;
+    await saveData({ teams });
     render();
   }
 
-  // Clears the roster in Firestore too, so it survives a refresh.
-  // doNotPick/picked/order are left alone. No confirm(): it silently
-  // no-ops in standalone/home-screen-PWA contexts, which made the button
-  // look broken on phones with the app added to the home screen.
+  // Clears this event's roster in Firestore too, so it survives a
+  // refresh. doNotPick/picked/order are left alone.
   function clearTeamList(){
-    state.teamList = Object.assign({}, state.teamList, { teams: [] });
+    state.eventData = Object.assign({}, state.eventData, { teams: [] });
     render();
-    saveTeamList({ teams: [] });
+    saveData({ teams: [] });
   }
 
-  // Applies the search box on top of state.teamList.teams.
+  // Applies the search box on top of the roster.
   function filteredSettingsRows(){
-    let rows = state.teamList.teams;
-    if(state.settingsSearch.trim()){
-      const q = state.settingsSearch.trim().toLowerCase();
+    let rows = state.eventData.teams;
+    if(state.search.trim()){
+      const q = state.search.trim().toLowerCase();
       rows = rows.filter(t => t.team.toLowerCase().includes(q) || (t.teamName||"").toLowerCase().includes(q));
     }
     return rows;
@@ -259,87 +343,186 @@
   // ====================== RENDER ======================
   function render(){
     const app = document.getElementById('app');
+    const activeLabel = activeEventTitle(state.index);
     app.innerHTML = `
       <div class="topbar">
         <div class="topbar-inner">
           <div class="brand">
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ SETTINGS</span></div>
-            ${state.teamList.eventLabel ? `<div class="brand-sub">${esc(state.teamList.eventLabel)}</div>` : ''}
+            ${!state.loaded ? `<div class="brand-sub">Loading…</div>` : (activeLabel ? `<div class="brand-sub">${esc(activeLabel)}</div>` : '')}
           </div>
         </div>
       </div>
       <div class="wrap">
-        ${!state.loaded ? `<div class="loading-note">Loading team list…</div>` : renderSettings()}
+        ${!state.loaded ? `<div class="loading-note">Loading events…</div>` : renderSettings()}
         <div class="footnote">This page isn't linked from the main app — bookmark it if you need it again. Changes here sync live to everyone using the app.</div>
       </div>
     `;
     attachHandlers();
   }
 
-  // Event code/source toolbar, then the roster table.
   function renderSettings(){
-    const totalTeams = state.teamList.teams.length;
+    const errors = [
+      state.indexError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.indexError)}</div>` : '',
+      state.dataError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.dataError)}</div>` : '',
+      !isConfigured ? `<div class="status-msg err" style="margin-bottom:14px;">Firebase isn't configured — nothing on this page will be saved or shared.</div>` : ''
+    ].join("");
 
-    const eventLabelField = `
-      <div style="display:flex; gap:14px; flex-wrap:wrap;">
-        <div class="field" style="max-width:320px;">
-          <label>Event label (optional)</label>
-          <input type="text" id="settings-event-label" value="${esc(state.teamList.eventLabel)}" placeholder="e.g. AUSC 2026">
+    // The pseudo-event has no code, roster or stats to edit — only the
+    // choice to make it what everyone's app is showing.
+    if(isAllTeamsEvent(state.editingEventId)){
+      return errors + renderEventPicker() + renderAllTeamsCard();
+    }
+
+    if(!Object.keys(state.index.events).length){
+      return errors + renderEventPicker() + `
+        <div class="empty-state">
+          <h3>No events set up yet</h3>
+          <p>Add an event to get started. Each event keeps its own team list, pick order and do-not-pick marks, so switching between them doesn't lose anything.</p>
+        </div>`;
+    }
+
+    return errors + renderEventPicker() + renderEventEditor() + renderRoster();
+  }
+
+  // The event selector plus the create/activate/delete actions. Kept
+  // above everything else because it decides what the rest of the page
+  // is editing.
+  function renderEventPicker(){
+    const ids = Object.keys(state.index.events);
+    const options = ids.map(id => {
+      const isActive = id === state.index.activeEventId;
+      return `<option value="${esc(id)}" ${id===state.editingEventId?'selected':''}>${esc(eventTitle(state.index.events[id]))}${isActive?' (active)':''}</option>`;
+    }).join("");
+    // Last in the list, and always there: it's the same kind of choice
+    // as an event — what the app is showing — but it isn't one, so it
+    // has no settings and can't be deleted.
+    const allOption = `<option value="${ALL_TEAMS_EVENT_ID}" ${isAllTeamsEvent(state.editingEventId)?'selected':''}>${esc(ALL_TEAMS_LABEL)}${isAllTeamsEvent(state.index.activeEventId)?' (active)':''}</option>`;
+    const editingAll = isAllTeamsEvent(state.editingEventId);
+    const editingIsActive = state.editingEventId && state.editingEventId === state.index.activeEventId;
+    return `
+      <div class="section-card identity">
+        <div class="section-title">Events</div>
+        <div class="data-toolbar" style="margin-bottom:0;">
+          <select id="event-picker" style="max-width:280px;" title="Which event this page is editing">${options}${allOption}</select>
+          <button class="btn-secondary" id="event-new-btn">+ New event</button>
+          ${state.editingEventId && !editingIsActive ? `<button class="btn-secondary" id="event-activate-btn" title="Switch everyone's app to this">Make active</button>` : ''}
+          <div class="spacer"></div>
+          ${ids.length && !editingAll ? `<button class="delete-btn" id="event-delete-btn">${state.confirmDeleteEvent ? 'Really delete — everything for this event' : 'Delete event'}</button>` : ''}
         </div>
-        <div class="field" style="max-width:260px;">
-          <label>EPA country (only used for events without Statbotics)</label>
-          <input type="text" id="settings-epa-country" value="${esc(state.teamList.epaCountry)}" placeholder="e.g. Australia" title="Pick List fetches every team in this country in one Statbotics request. Teams from anywhere else are still looked up one at a time, as is everything if this is left blank.">
+        ${state.editingEventId ? `<div class="count-strip" style="margin:10px 0 0 0;">${
+          editingIsActive
+            ? (editingAll
+                ? `Everyone's app is showing <b>every team with scouting data</b>, not one event's list.`
+                : `Editing the <b>active</b> event — this is what everyone's app is showing.`)
+            : `${editingAll ? `Showing what <b>${esc(ALL_TEAMS_LABEL)}</b> does` : `Editing <b>${esc(eventTitle(state.index.events[state.editingEventId]))}</b>`}. Everyone's app is still on <b>${esc(activeEventTitle(state.index))}</b> until you press Make active.`
+        }</div>` : ''}
+      </div>
+    `;
+  }
+
+  // Stands in for the event editor and roster when the pseudo-event is
+  // picked: there is nothing to configure, so this just explains what
+  // making it active does.
+  function renderAllTeamsCard(){
+    return `
+      <div class="section-card">
+        <div class="section-title">${esc(ALL_TEAMS_LABEL)}</div>
+        <div class="field-note" style="font-size:13.5px; line-height:1.6;">
+          Not an event — a way to see everything. Make this active and Scouting Data lists every team a report has ever been saved for, from any competition, instead of one event's team list. Each report stays tagged with the event it was collected at.
+        </div>
+        <div class="field-note" style="font-size:13.5px; line-height:1.6; margin-top:10px;">
+          There's no team list, match schedule, EPA or quals rank here — those all belong to an event, so Pick List and Match Schedule stay empty until you switch back to one. Nothing is deleted by switching: every event keeps its own list and pick order.
         </div>
       </div>
     `;
+  }
 
-    const lookupToolbar = `
-      <div class="data-toolbar">
-        <input type="text" id="settings-event-code" placeholder="Event code, e.g. 2026casf" value="${esc(state.settingsEventCode)}" style="max-width:220px;" title="Also drives index.html's Pick List live quals-rank lookup — save it with Tab/Enter even without reloading teams">
-        <select id="settings-source">
-          <option value="statbotics" ${state.settingsSource==='statbotics'?'selected':''}>Statbotics (no key needed)</option>
-          <option value="tba" ${state.settingsSource==='tba'?'selected':''}>The Blue Alliance</option>
-          <option value="manual" ${state.settingsSource==='manual'?'selected':''}>Manual entry</option>
-        </select>
-        ${state.settingsSource==='tba' ? `<input type="text" id="settings-tba-key" placeholder="TBA Read API Key" value="${esc(state.tbaKey)}" style="max-width:220px;">` : ''}
-        ${state.settingsSource!=='manual' ? `<button class="btn-secondary" id="settings-load-btn" ${state.settingsLoading?'disabled':''}>${state.settingsLoading ? 'Loading…' : 'Load teams'}</button>` : ''}
-        ${totalTeams ? `<button class="btn-secondary" id="settings-clear-btn">Clear all teams</button>` : ''}
+  // The edited event's own settings. Text fields commit on blur/Enter
+  // (see attachHandlers); the offseason checkbox commits immediately.
+  function renderEventEditor(){
+    const d = state.draft;
+    return `
+      <div class="section-card">
+        <div class="section-title">Event settings</div>
+        <div class="grid2">
+          <div class="field">
+            <label>Event code</label>
+            <input type="text" id="event-code" value="${esc(d.code)}" placeholder="e.g. 2026ausc" title="Drives the team list, the match schedule, EPA and quals rank.">
+          </div>
+          <div class="field">
+            <label>Event name (optional)</label>
+            <input type="text" id="event-label" value="${esc(d.label)}" placeholder="e.g. AUSC 2026">
+          </div>
+        </div>
+        <div class="field">
+          <div class="checkbox-row">
+            <input type="checkbox" id="event-offseason" ${d.offseason?'checked':''}>
+            <label for="event-offseason">Offseason event</label>
+          </div>
+          <div class="field-note">Statbotics doesn't index offseason events. Ticking this loads the team list and match schedule from The Blue Alliance, takes quals rank from TBA's rankings, and rates teams on their current season-long EPA instead of an event EPA that doesn't exist.</div>
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label>EPA country</label>
+            <input type="text" id="event-epa-country" value="${esc(d.epaCountry)}" placeholder="e.g. Australia" title="One Statbotics request covers every team in this country. Teams from anywhere else are still looked up individually.">
+            <div class="field-note">Used when there's no event EPA to read — always at an offseason event. Leave blank to skip it.</div>
+          </div>
+          <div class="field">
+            <label>TBA Read API key ${state.draft.offseason ? '(required for this event)' : '(optional)'}</label>
+            <input type="text" id="tba-key" value="${esc(state.tbaKeyDraft)}" placeholder="Free from thebluealliance.com/account">
+            <div class="field-note">Shared with everyone, across all events, so scouts' phones don't each need one. Read-only key — it can't change anything on TBA.</div>
+          </div>
+        </div>
       </div>
-      ${state.settingsSource==='manual' ? `
+    `;
+  }
+
+  // The edited event's team list.
+  function renderRoster(){
+    const totalTeams = state.eventData.teams.length;
+    const toolbar = `
+      <div class="data-toolbar">
+        <button class="btn-secondary" id="roster-load-btn" ${state.rosterLoading?'disabled':''}>${state.rosterLoading ? 'Loading…' : (totalTeams ? 'Reload teams' : 'Load teams')}</button>
+        <button class="btn-secondary" id="roster-manual-btn">${state.showManual ? 'Hide manual entry' : 'Add teams manually'}</button>
+        <div class="spacer"></div>
+        ${totalTeams ? `<button class="delete-btn" id="roster-clear-btn">Clear all teams</button>` : ''}
+      </div>
+      ${state.showManual ? `
       <div class="field" style="max-width:520px; margin-bottom:16px;">
         <label>Add teams — one per line, "1234" or "1234 Team Name"</label>
-        <textarea id="settings-manual-input" placeholder="254 Cheesy Poofs&#10;6996 Koalafied">${esc(state.settingsManualInput)}</textarea>
-        <div style="margin-top:8px;"><button class="btn-secondary" id="settings-manual-add-btn">Add teams</button></div>
+        <textarea id="roster-manual-input" placeholder="254 Cheesy Poofs&#10;6996 Koalafied">${esc(state.manualInput)}</textarea>
+        <div style="margin-top:8px;"><button class="btn-secondary" id="roster-manual-add-btn">Add teams</button></div>
       </div>` : ''}
-      ${state.settingsError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.settingsError)}</div>` : ''}
-      ${state.teamListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.teamListError)}</div>` : ''}
-      ${!isConfigured ? `<div class="status-msg err" style="margin-bottom:14px;">Firebase isn't configured — the team list won't be saved or shared.</div>` : ''}
+      ${state.rosterError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.rosterError)}</div>` : ''}
     `;
 
     if(!totalTeams){
-      return eventLabelField + lookupToolbar + `
+      return `<div class="section-title" style="margin-top:22px;">Team list</div>` + toolbar + `
         <div class="empty-state">
           <h3>No teams loaded</h3>
-          <p>Enter an event code and load teams from Statbotics or TBA, or switch to Manual entry above.</p>
+          <p>${state.draft.code.trim()
+              ? `Press Load teams to pull the roster for <b>${esc(state.draft.code.trim())}</b> from ${state.draft.offseason ? 'The Blue Alliance' : 'Statbotics'}, or add them by hand.`
+              : `Set an event code above, then load the roster — or add teams by hand.`}</p>
         </div>`;
     }
 
     const rows = filteredSettingsRows();
     const filterToolbar = `
       <div class="data-toolbar">
-        <input type="text" id="settings-search" placeholder="Search team # or name" value="${esc(state.settingsSearch)}">
+        <input type="text" id="roster-search" placeholder="Search team # or name" value="${esc(state.search)}">
         <div class="spacer"></div>
       </div>
       <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}</div>
     `;
     const body = rows.length ? renderSettingsTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search.</p></div>`;
-    return eventLabelField + lookupToolbar + filterToolbar + body;
+    return `<div class="section-title" style="margin-top:22px;">Team list</div>` + toolbar + filterToolbar + body;
   }
 
   // Name field commits on blur/Enter, not per keystroke — see
-  // attachHandlers. No quals rank: it's a live Pick List lookup, not
-  // part of the roster.
+  // attachHandlers. No quals rank: it's a live lookup, not part of the
+  // roster.
   function renderSettingsTable(rows){
     const head = `<th>Team #</th><th>Team Name</th><th></th>`;
     const body = rows.map(t=>`
@@ -353,29 +536,59 @@
 
   // ====================== EVENT HANDLERS ======================
   function attachHandlers(){
-    const eventLabelEl = document.getElementById('settings-event-label');
-    if(eventLabelEl) eventLabelEl.onchange = ()=> updateEventLabel(eventLabelEl.value);
-    const epaCountryEl = document.getElementById('settings-epa-country');
-    if(epaCountryEl) epaCountryEl.onchange = ()=> updateEpaCountry(epaCountryEl.value);
-    const eventCodeEl = document.getElementById('settings-event-code');
-    if(eventCodeEl){
-      eventCodeEl.oninput = ()=>{ state.settingsEventCode = eventCodeEl.value; state.eventCodeTouched = true; };
-      eventCodeEl.onchange = ()=> updateEventCode(eventCodeEl.value);
+    const pickerEl = document.getElementById('event-picker');
+    if(pickerEl) pickerEl.onchange = ()=> setEditingEvent(pickerEl.value);
+    const newBtn = document.getElementById('event-new-btn');
+    if(newBtn) newBtn.onclick = createEvent;
+    const activateBtn = document.getElementById('event-activate-btn');
+    if(activateBtn) activateBtn.onclick = makeEditedEventActive;
+    const deleteBtn = document.getElementById('event-delete-btn');
+    if(deleteBtn) deleteBtn.onclick = deleteEditedEvent;
+
+    // oninput keeps the draft current without a render (which would take
+    // the caret with it); onchange is what actually writes.
+    const bindDraft = (id, key, onCommit) => {
+      const el = document.getElementById(id);
+      if(!el) return;
+      el.oninput = ()=>{ state.draft = Object.assign({}, state.draft, { [key]: el.value }); };
+      el.onchange = ()=>{
+        const value = el.value.trim();
+        state.draft = Object.assign({}, state.draft, { [key]: value });
+        saveConfig({ [key]: value });
+        if(onCommit) onCommit();
+      };
+    };
+    // A new code invalidates the roster shown for it, so re-render to
+    // update the "load from" hints.
+    bindDraft('event-code', 'code', render);
+    bindDraft('event-label', 'label', render);
+    bindDraft('event-epa-country', 'epaCountry');
+
+    const offseasonEl = document.getElementById('event-offseason');
+    if(offseasonEl) offseasonEl.onchange = ()=>{
+      state.draft = Object.assign({}, state.draft, { offseason: offseasonEl.checked });
+      saveConfig({ offseason: offseasonEl.checked });
+      render();
+    };
+
+    const tbaKeyEl = document.getElementById('tba-key');
+    if(tbaKeyEl){
+      tbaKeyEl.oninput = ()=>{ state.tbaKeyDraft = tbaKeyEl.value; };
+      tbaKeyEl.onchange = ()=> saveTbaKey(tbaKeyEl.value);
     }
-    const sourceEl = document.getElementById('settings-source');
-    if(sourceEl) sourceEl.onchange = ()=>{ state.settingsSource = sourceEl.value; state.settingsError = null; render(); };
-    const tbaKeyEl = document.getElementById('settings-tba-key');
-    if(tbaKeyEl) tbaKeyEl.oninput = ()=>{ state.tbaKey = tbaKeyEl.value; writeLocal('pitscout_tba_key', tbaKeyEl.value); };
-    const loadBtn = document.getElementById('settings-load-btn');
+
+    const loadBtn = document.getElementById('roster-load-btn');
     if(loadBtn) loadBtn.onclick = loadTeamsFromSource;
-    const clearBtn = document.getElementById('settings-clear-btn');
+    const manualBtn = document.getElementById('roster-manual-btn');
+    if(manualBtn) manualBtn.onclick = ()=>{ state.showManual = !state.showManual; render(); };
+    const clearBtn = document.getElementById('roster-clear-btn');
     if(clearBtn) clearBtn.onclick = clearTeamList;
-    const manualInputEl = document.getElementById('settings-manual-input');
-    if(manualInputEl) manualInputEl.oninput = ()=>{ state.settingsManualInput = manualInputEl.value; };
-    const manualAddBtn = document.getElementById('settings-manual-add-btn');
+    const manualInputEl = document.getElementById('roster-manual-input');
+    if(manualInputEl) manualInputEl.oninput = ()=>{ state.manualInput = manualInputEl.value; };
+    const manualAddBtn = document.getElementById('roster-manual-add-btn');
     if(manualAddBtn) manualAddBtn.onclick = addManualTeamsToList;
-    const settingsSearchEl = document.getElementById('settings-search');
-    if(settingsSearchEl) settingsSearchEl.oninput = ()=>{ state.settingsSearch = settingsSearchEl.value; render(); };
+    const searchEl = document.getElementById('roster-search');
+    if(searchEl) searchEl.oninput = ()=>{ state.search = searchEl.value; render(); };
 
     document.querySelectorAll('[data-team-name-for]').forEach(el=>{
       el.onchange = ()=> updateTeamName(el.dataset.teamNameFor, el.value);
@@ -387,7 +600,7 @@
 
   // ====================== STARTUP ======================
   render();
-  subscribeTeamList();
+  subscribeIndex();
 </script>
 </body>
 </html>

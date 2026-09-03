@@ -12,13 +12,17 @@
   origin. See the #offline-note block below.
 
   Sibling files:
-    - style.css           — all CSS, shared with index.html/settings.html.
+    - style.css           — all CSS, shared with index.html/pick-list.html/
+                            settings.html.
     - team-list-store.js  — Firebase connection + team-list doc helpers.
-    - index.html          — Scouting Data + Pick List. Linked both ways
-                            from the tab bar; team numbers here link to
-                            index.html#team=NNNN, which opens that team's
-                            scouting form.
-    - settings.html       — where the event code this page reads is set.
+    - index.html          — Scouting Data. Linked from the tab bar; team
+                            numbers here link to index.html#team=NNNN,
+                            which opens that team's scouting form.
+    - pick-list.html      — the roster ranked for alliance selection.
+                            Linked from the tab bar.
+    - settings.html       — where events are set up. This page follows
+                            whichever one is active and takes everything
+                            it needs from that event's settings.
 
   Two views, one page (state.selectedMatch decides which):
     - Schedule  — every match the focus team is in, in play order, with
@@ -27,17 +31,23 @@
     - Preview   — one match: predicted/final score, then a card per team
                   carrying its whole pit report plus EPA and quals rank.
 
-  Data sources:
-    - Match schedule: Statbotics /v3/matches (no key), or The Blue
-      Alliance with a Read API key — TBA covers offseason events
-      Statbotics never indexes. Both are normalized to the one match
-      shape in normalizeStatbotics/normalizeTBA.
+  Data sources — nothing here is chosen by hand. The active event's
+  settings decide, so a scout opening this on a phone gets the right
+  schedule without configuring anything:
+    - Match schedule: The Blue Alliance for an event marked offseason
+      (Statbotics never indexes those), Statbotics otherwise, falling
+      back to TBA if Statbotics has nothing yet and a key is saved.
+      Both are normalized to the one match shape in
+      normalizeStatbotics/normalizeTBA.
     - Scouting reports: the 'pit-reports' collection, same as index.html.
-    - Event code and roster: 'settings/team-list', set in settings.html.
-    - EPA + quals rank: Statbotics, exactly as index.html's Pick List
-      fetches them, but READ-ONLY here. index.html owns writing the
-      cache back to the team-list doc; this page hydrates from it and
-      refetches live, so there's only one writer of those fields.
+      Not scoped to an event — a report collected elsewhere is tagged in
+      the team cards rather than hidden.
+    - Event settings and roster: 'settings/event-index' and the active
+      event's own doc, both set in settings.html.
+    - EPA + quals rank: fetchEventStats in team-list-store.js, the same
+      call pick-list.html makes, but READ-ONLY here. pick-list.html owns
+      writing the cache back to the event doc; this page hydrates from
+      it and refetches live, so there's only one writer.
 
   render() rebuilds all of #app from `state`, then attachHandlers()
   rebinds listeners. New interactive elements need a handler there.
@@ -51,6 +61,7 @@
 <title>Pit Scout — Match Schedule</title>
 <link rel="icon" type="image/png" href="Circular Logo.png">
 <link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 </head>
 <body>
 <div id="app"></div>
@@ -95,7 +106,9 @@
 <script type="module">
   import {
     db, fb, isConfigured, esc, readLocal, writeLocal, isHighlightTeam,
-    DEFAULT_EPA_COUNTRY, HIGHLIGHT_TEAMS, subscribeTeamListStore
+    HIGHLIGHT_TEAMS, normalizeEvent, eventTitle, activeEventOf, activeEventTitle,
+    isAllTeamsEvent, ALL_TEAMS_LABEL, resolveTbaKey,
+    subscribeEventIndexStore, subscribeEventDataStore, fetchEventStats
   } from './team-list-store.js';
 
   if(!isConfigured) document.getElementById('setup-banner').style.display = 'block';
@@ -105,13 +118,6 @@
   // same team the tables elsewhere already single out — so the default
   // tracks that list rather than repeating the number here.
   const DEFAULT_FOCUS_TEAM = HIGHLIGHT_TEAMS[0] || "";
-
-  const EPA_YEAR = 2026;
-
-  // Schedules move during an event (matches replayed, timings slipping),
-  // so the list re-fetches itself on this interval as well as on the
-  // Refresh button. Long enough to be invisible on a phone's battery.
-  const AUTO_REFRESH_MS = 120000;
 
   // Play order, and the label each level gets when a source doesn't
   // supply a match name (TBA doesn't).
@@ -150,9 +156,8 @@
     scheduleLoading: false,
     scheduleError: null,
     scheduleFetchedAt: null,        // Date, for the "updated" line
-    scheduleSource: readLocal('pitscout_schedule_source', 'statbotics'), // "statbotics" | "tba"
+    scheduleSource: null,           // "statbotics" | "tba" — which one answered
     usedFallback: false,            // Statbotics had nothing, so TBA answered
-    tbaKey: readLocal('pitscout_tba_key', ''),   // shared with settings.html
     onlyUnplayed: false,            // hides finished matches
 
     // ---- Scouting reports, synced from 'pit-reports' ----
@@ -160,70 +165,51 @@
     reportsLoaded: false,
     reportsError: null,
 
-    // ---- The shared roster/event, synced from 'settings/team-list' ----
-    teamList: { teams: [], eventLabel: "", eventCode: "", epaCountry: DEFAULT_EPA_COUNTRY },
+    // ---- Events, synced from 'settings/event-index' ----
+    index: { activeEventId: "", events: {}, tbaKey: "" },
+    indexLoaded: false,        // first event-index snapshot has arrived — until then the topbar says "Loading…" rather than naming an event it doesn't know yet
+    event: normalizeEvent(null),    // the active event's settings
+
+    // ---- The active event's roster, from its own doc ----
+    teamList: { teams: [] },
     teamListLoaded: false,
     teamListError: null
   };
 
-  // ================= STATBOTICS EPA + QUALS RANK =================
-  // Same two lookups the Pick List uses, and the same reasoning: one
-  // request for the whole field rather than one per team. The event
-  // lookup is what matters here — a preview's six teams are all at this
-  // event by definition — with the country lookup as the offseason
-  // fallback for events Statbotics doesn't track.
+  // ================= EPA + QUALS RANK =================
+  // Delegated to fetchEventStats in team-list-store.js, which knows
+  // which source can answer for this event — Statbotics in season, and
+  // for an offseason event its season-long ratings plus The Blue
+  // Alliance's rankings, since Statbotics doesn't index those at all.
   //
   // READ-ONLY, unlike index.html: nothing here writes the results back
-  // to the team-list doc, so the cache has exactly one writer. Values
+  // to the event doc, so the cache has exactly one writer. Values
   // already cached there are hydrated below, so a preview paints
   // immediately and the live fetch just sharpens it.
   let epaCache = {};       // { "254": {status, epa, percentile} }
   let qualRankCache = {};  // { "254": {status, rank, eventCode} }
   let statsState = { key: null, pending: false };
 
-  async function loadStats(eventCode, country){
-    const ev = (eventCode||"").trim();
-    const c = (country||"").trim();
-    const key = ev + "|" + c;
+  async function loadStats(){
+    const ev = state.event;
+    const key = [state.index.activeEventId, ev.code, ev.epaCountry, ev.offseason ? 'off' : 'on'].join('|');
     if(statsState.pending || statsState.key === key) return;
     statsState = { key, pending: true };
     try{
-      // A 404 means Statbotics has no such event — offseason, or a
-      // typo'd code — so fall through to the country lookup rather than
-      // leaving every card with no EPA at all.
-      let rows = [];
-      if(ev){
-        const res = await fetch(`https://api.statbotics.io/v3/team_events?event=${encodeURIComponent(ev)}&limit=1000`);
-        rows = res.ok ? await res.json() : [];
-      }
-      if(rows.length){
-        rows.forEach(row => {
-          const team = String(row.team);
-          // No percentile on team_event — only team_year ranks a team
-          // against the whole field. The card just omits it.
-          epaCache[team] = { status:"ok", epa: row.epa ? row.epa.total_points : null, percentile: null };
-          const rank = row.record && row.record.qual ? row.record.qual.rank : null;
-          qualRankCache[team] = { status:"ok", rank, eventCode: ev };
-        });
-      }else if(c){
-        const res = await fetch(`https://api.statbotics.io/v3/team_years?year=${EPA_YEAR}&country=${encodeURIComponent(c)}&limit=1000`);
-        if(!res.ok) throw new Error("country lookup failed");
-        (await res.json()).forEach(row => {
-          const team = String(row.team);
-          epaCache[team] = {
-            status: "ok",
-            epa: row.epa ? row.epa.total_points : null,
-            percentile: row.epa && row.epa.ranks ? row.epa.ranks.total.percentile : null
-          };
-        });
-      }
+      const stats = await fetchEventStats(ev, resolveTbaKey(state.index));
+      Object.keys(stats.epa).forEach(team => {
+        epaCache[team] = { status: "ok", epa: stats.epa[team].epa, percentile: stats.epa[team].percentile };
+      });
+      Object.keys(stats.qualRank).forEach(team => {
+        qualRankCache[team] = { status: "ok", rank: stats.qualRank[team].rank, eventCode: stats.qualRank[team].eventCode };
+      });
       statsState.pending = false;
       render();
     }catch(e){
       // Non-fatal and self-healing: clearing `key` lets the next call
       // retry. Cards render from whatever's cached.
       statsState = { key: null, pending: false };
-      console.warn('Statbotics EPA lookup failed', e);
+      console.warn('Event stats lookup failed', e);
       render();
     }
   }
@@ -242,7 +228,7 @@
   // needs both full alliances anyway, and holding the lot means changing
   // the focus team is a re-filter rather than another round trip.
   async function loadSchedule(){
-    const code = (state.teamList.eventCode||"").trim();
+    const code = state.event.code.trim();
     if(!code){
       state.matches = [];
       state.scheduleError = null;
@@ -255,26 +241,32 @@
     try{
       let matches = [];
       state.usedFallback = false;
-      if(state.scheduleSource === 'tba'){
-        matches = await fetchFromTBA(code);
+      const key = resolveTbaKey(state.index);
+      if(state.event.offseason){
+        // Statbotics has no record of an offseason event, so there's
+        // nothing to try first.
+        state.scheduleSource = 'tba';
+        matches = await fetchFromTBA(code, key);
       }else{
+        state.scheduleSource = 'statbotics';
         matches = await fetchFromStatbotics(code);
-        // Offseason events aren't on Statbotics at all. If a TBA key is
-        // already saved (settings.html stores one), try there before
-        // reporting an empty schedule.
-        if(!matches.length && state.tbaKey.trim()){
-          matches = await fetchFromTBA(code);
+        // An in-season event Statbotics hasn't ingested yet — most
+        // often the hours before quals start. TBA usually has the
+        // schedule already, so use it when a key is saved.
+        if(!matches.length && key){
+          matches = await fetchFromTBA(code, key);
           state.usedFallback = matches.length > 0;
+          if(state.usedFallback) state.scheduleSource = 'tba';
         }
       }
       matches.sort(compareMatches);
       state.matches = matches;
       state.scheduleFetchedAt = new Date();
       if(!matches.length){
-        state.scheduleError = state.scheduleSource === 'tba'
+        state.scheduleError = state.event.offseason
           ? `The Blue Alliance has no matches for "${code}" yet.`
           : `Statbotics has no matches for "${code}" yet.` +
-            (state.tbaKey.trim() ? '' : ' If this is an offseason event, switch the source to The Blue Alliance and add your Read API key.');
+            (key ? '' : ' If this is an offseason event, tick “Offseason event” on the settings page and add a TBA Read API key there.');
       }
     }catch(e){
       state.scheduleError = e.message || "Couldn't load the match schedule.";
@@ -293,9 +285,8 @@
     return Array.isArray(data) ? data.map(normalizeStatbotics) : [];
   }
 
-  async function fetchFromTBA(code){
-    const key = state.tbaKey.trim();
-    if(!key) throw new Error("Enter your TBA Read API key first (get one free at thebluealliance.com/account).");
+  async function fetchFromTBA(code, key){
+    if(!key) throw new Error("This event needs a TBA Read API key — add one on the settings page (they're free at thebluealliance.com/account).");
     const res = await fetch(`https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(code)}/matches/simple`, {
       headers: { 'X-TBA-Auth-Key': key }
     });
@@ -407,43 +398,69 @@
     });
   }
 
-  // The event code drives everything on this page, so a snapshot that
-  // changes it re-fetches the schedule and the EPA numbers.
-  function subscribeTeamList(){
-    subscribeTeamListStore((d)=>{
-      const prevCode = state.teamList.eventCode;
-      state.teamList = {
-        teams: d.teams || [],
-        eventLabel: d.eventLabel || "",
-        eventCode: d.eventCode || "",
-        epaCountry: d.epaCountry === undefined ? DEFAULT_EPA_COUNTRY : d.epaCountry
-      };
+  // The active event drives everything on this page, so a snapshot that
+  // changes it re-fetches the schedule and the stats. Two subscriptions:
+  // the index (which event, and its settings) and that event's roster.
+  let unsubEventData = ()=>{};
+  let currentEventId = null;
+
+  function subscribeEvents(){
+    subscribeEventIndexStore((index)=>{
+      const prevCode = state.event.code;
+      const prevOffseason = state.event.offseason;
+      state.index = index;
+      state.indexLoaded = true;
+      state.event = activeEventOf(index);
       state.teamListError = null;
+
+      if(index.activeEventId !== currentEventId){
+        currentEventId = index.activeEventId;
+        // Nothing carries across events — a different event means
+        // different ranks and a different roster.
+        epaCache = {}; qualRankCache = {};
+        statsState = { key: null, pending: false };
+        state.teamList = { teams: [] };
+        unsubEventData();
+        unsubEventData = subscribeEventDataStore(currentEventId, onEventData, ()=>{
+          state.teamListError = "Couldn't sync the team list, so previews have no roster names in them.";
+          render();
+        });
+      }
       state.teamListLoaded = true;
 
-      // Hydrate both caches from the doc so previews paint from the last
-      // known numbers while loadStats refetches. Only fills teams with no
-      // local entry, so a fresher result from this session isn't clobbered.
-      const epaData = d.epa || {};
-      Object.keys(epaData).forEach(team => {
-        if(!epaCache[team]) epaCache[team] = { status:"ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
-      });
-      const rankData = d.qualRank || {};
-      Object.keys(rankData).forEach(team => {
-        const entry = rankData[team];
-        // A past event's rank would be wrong for this one.
-        if(!qualRankCache[team] && entry && entry.eventCode === (d.eventCode||"")){
-          qualRankCache[team] = { status:"ok", rank: entry.rank, eventCode: entry.eventCode };
-        }
-      });
-
-      loadStats(state.teamList.eventCode, state.teamList.epaCountry);
-      if(state.teamList.eventCode !== prevCode) loadSchedule(); else render();
+      loadStats();
+      // The offseason flag changes which source answers, so it reloads
+      // the schedule just like a new event code does.
+      if(state.event.code !== prevCode || state.event.offseason !== prevOffseason) loadSchedule();
+      else render();
     }, ()=>{
+      state.indexLoaded = true;
       state.teamListError = "Couldn't sync the event settings (check Firestore rules for the 'settings' collection).";
       state.teamListLoaded = true;
       render();
     });
+  }
+
+  function onEventData(d){
+    state.teamList = { teams: d.teams || [] };
+    state.teamListError = null;
+
+    // Hydrate both caches from the doc so previews paint from the last
+    // known numbers while loadStats refetches. Only fills teams with no
+    // local entry, so a fresher result from this session isn't clobbered.
+    const epaData = d.epa || {};
+    Object.keys(epaData).forEach(team => {
+      if(!epaCache[team]) epaCache[team] = { status:"ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
+    });
+    const rankData = d.qualRank || {};
+    Object.keys(rankData).forEach(team => {
+      const entry = rankData[team];
+      // A past event code's rank would be wrong for this one.
+      if(!qualRankCache[team] && entry && entry.eventCode === state.event.code){
+        qualRankCache[team] = { status:"ok", rank: entry.rank, eventCode: entry.eventCode };
+      }
+    });
+    render();
   }
 
   // The team's report, or undefined. Doc id is the team number.
@@ -463,10 +480,22 @@
   // before the statuses were renamed.
   function statusTagHtml(rep){
     if(!rep || !rep.status) return `<span class="tag" style="opacity:0.55;">Not scouted</span>`;
-    if(rep.status === 'Pre-scouted') return `<span class="tag prescouted">Pre-scouted</span>`;
-    if(rep.status === 'Pit-scouted') return `<span class="tag pit-scouted">Pit-scouted</span>`;
-    if(rep.status === 'Match-scouted') return `<span class="tag match-scouted">Match-scouted</span>`;
-    return `<span class="tag">${esc(rep.status)}</span>`;
+    let tag;
+    if(rep.status === 'Pre-scouted') tag = `<span class="tag prescouted">Pre-scouted</span>`;
+    else if(rep.status === 'Pit-scouted') tag = `<span class="tag pit-scouted">Pit-scouted</span>`;
+    else if(rep.status === 'Match-scouted') tag = `<span class="tag match-scouted">Match-scouted</span>`;
+    else tag = `<span class="tag">${esc(rep.status)}</span>`;
+    return tag + otherEventTagHtml(rep);
+  }
+
+  // Mirrors index.html: pit reports aren't scoped to an event, so one
+  // collected somewhere else still shows — tagged with where, because
+  // that's what decides how much to trust it before a match.
+  function otherEventTagHtml(rep){
+    if(!rep || !rep.eventId || !state.index.activeEventId) return '';
+    if(rep.eventId === state.index.activeEventId) return '';
+    const where = (rep.eventCode || '').trim() || 'another event';
+    return ` <span class="tag other-event" title="Collected at ${esc(where)}, not at this event — the robot may have changed since">${esc(where)}</span>`;
   }
 
   // ====================== NAVIGATION (URL HASH) ======================
@@ -592,12 +621,12 @@
           <div class="brand">
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ SCHEDULE</span></div>
-            ${state.teamList.eventLabel ? `<div class="brand-sub">${esc(state.teamList.eventLabel)}</div>` : ''}
+            ${brandSubHtml()}
           </div>
           <div class="tabs">
             <a class="tab-btn" href="index.html">Scouting Data</a>
-            <a class="tab-btn" href="index.html#tab=rank">Pick List</a>
-            <button class="tab-btn active">Match Schedule</button>
+            <a class="tab-btn" href="pick-list.html">Pick List</a>
+            <span class="tab-btn active">Match Schedule</span>
           </div>
         </div>
       </div>
@@ -610,18 +639,34 @@
     attachHandlers();
   }
 
+  // The line under the wordmark: what the app is showing. Blank rather
+  // than a placeholder name when no event is set up at all.
+  function brandSubHtml(){
+    if(!state.indexLoaded) return `<div class="brand-sub">Loading…</div>`;
+    const title = activeEventTitle(state.index);
+    return title ? `<div class="brand-sub">${esc(title)}</div>` : '';
+  }
+
   // ---------- Schedule view ----------
   function renderSchedule(){
-    const code = (state.teamList.eventCode||"").trim();
+    const code = state.event.code.trim();
     const errors = [
       state.teamListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.teamListError)}</div>` : '',
       state.reportsError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.reportsError)}</div>` : ''
     ].join("");
 
     if(!code){
+      // A schedule belongs to one event, so the all-teams selection has
+      // none — say that rather than asking for a code it can't have.
+      if(isAllTeamsEvent(state.index.activeEventId)){
+        return errors + `<div class="empty-state">
+          <h3>No schedule for “${esc(ALL_TEAMS_LABEL)}”</h3>
+          <p>A match schedule belongs to one event. Pick that event on the settings page (open <code>settings.html</code>) to see its matches.</p>
+        </div>`;
+      }
       return errors + `<div class="empty-state">
         <h3>No event code set</h3>
-        <p>This page builds the schedule from the event code saved on the settings page — open <code>settings.html</code>, enter your event code (e.g. <code>2026ausc</code>), and it'll show up here.</p>
+        <p>This page builds the schedule from the active event's code — open <code>settings.html</code>, ${state.index.activeEventId ? 'give this event a code' : 'set up an event'} (e.g. <code>2026ausc</code>), and it'll show up here.</p>
       </div>`;
     }
 
@@ -632,18 +677,13 @@
         <div style="max-width:150px;">
           <input type="text" id="focus-team" value="${esc(state.focusTeam)}" placeholder="Team #" title="Whose schedule to show. Clear it to see every match at the event.">
         </div>
-        <select id="schedule-source" title="Statbotics needs no key. The Blue Alliance covers offseason events Statbotics never indexes, but needs a free Read API key.">
-          <option value="statbotics" ${state.scheduleSource==='statbotics'?'selected':''}>Statbotics (no key needed)</option>
-          <option value="tba" ${state.scheduleSource==='tba'?'selected':''}>The Blue Alliance</option>
-        </select>
-        ${state.scheduleSource==='tba' ? `<input type="text" id="tba-key" placeholder="TBA Read API Key" value="${esc(state.tbaKey)}" style="max-width:200px;">` : ''}
         <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="only-unplayed" ${state.onlyUnplayed?'checked':''}><label for="only-unplayed" style="margin:0;">Upcoming only</label></div>
         <div class="spacer"></div>
         <button class="btn-secondary" id="refresh-schedule-btn" ${state.scheduleLoading?'disabled':''}>${state.scheduleLoading ? 'Loading…' : 'Refresh'}</button>
       </div>
       <div class="count-strip">
         ${state.focusTeam ? `Showing <b>${rows.length}</b> match${rows.length===1?'':'es'} for team <b>${esc(state.focusTeam)}</b>` : `Showing all <b>${rows.length}</b> match${rows.length===1?'':'es'}`}
-        · event <b>${esc(code)}</b>${state.usedFallback ? ' · via The Blue Alliance' : ''}${state.scheduleFetchedAt ? ` · updated ${state.scheduleFetchedAt.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}` : ''}
+        · event <b>${esc(code)}</b>${state.event.offseason ? ' · offseason' : ''} · via ${state.scheduleSource === 'tba' ? 'The Blue Alliance' : 'Statbotics'}${state.usedFallback ? ' (Statbotics had nothing yet)' : ''}${state.scheduleFetchedAt ? ` · updated ${state.scheduleFetchedAt.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}` : ''}
       </div>
     `;
 
@@ -703,12 +743,23 @@
     return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
-  // Three team numbers, with ours picked out in the highlight color the
-  // rest of the app uses for it.
+  // Which of the two things worth calling out a team number applies, if
+  // either: it's genuinely ours (HIGHLIGHT_TEAMS, same color as the rest
+  // of the app), or it's just whoever's schedule is currently focused —
+  // a different color, so searching another team's schedule never reads
+  // as "this is 6996" at a glance.
+  function teamMarkClass(t){
+    if(isHighlightTeam(t)) return 'our-team';
+    if(t === state.focusTeam.trim()) return 'viewing-team';
+    return '';
+  }
+
+  // Three team numbers, with the focus team(s) picked out — see
+  // teamMarkClass.
   function allianceTeamsHtml(teams){
     if(!teams.length) return '<span class="dim">—</span>';
     return teams.map(t =>
-      `<span class="${isHighlightTeam(t) || t === state.focusTeam.trim() ? 'focus-team' : ''}">${esc(t)}</span>`
+      `<span class="${teamMarkClass(t)}">${esc(t)}</span>`
     ).join('<span class="sep">·</span>');
   }
 
@@ -750,7 +801,7 @@
         <div class="preview-title">${esc(m.name)}</div>
         ${side ? `<span class="side-chip ${side}">${esc(state.focusTeam)} · ${side}</span>` : ''}
       </div>
-      <div class="preview-meta">${esc(when)} · ${esc((state.teamList.eventLabel || state.teamList.eventCode))} · ${m.played ? 'Played' : 'Not played yet'}</div>
+      <div class="preview-meta">${esc(when)} · ${esc(eventTitle(state.event))} · ${m.played ? 'Played' : 'Not played yet'}</div>
       ${renderPredCard(m)}
       <div class="preview-grid">
         ${renderAlliancePanel('red', m.red, m)}
@@ -833,7 +884,7 @@
     const t = String(team);
     const rep = reportForTeam(t);
     const name = (rep && rep.teamName) || rosterNameFor(t);
-    const focus = isHighlightTeam(t) || t === state.focusTeam.trim();
+    const markClass = teamMarkClass(t);
     const epa = epaFor(t);
     const rank = qualRankFor(t);
     const epaEntry = epaCache[t];
@@ -865,7 +916,7 @@
     }
 
     return `
-      <div class="team-card ${focus ? 'focus' : ''} ${rep ? '' : 'unscouted'}">
+      <div class="team-card ${markClass} ${rep ? '' : 'unscouted'}">
         <div class="team-card-head">
           <span class="team-card-num">${esc(t)}</span>
           ${name ? `<span class="team-card-name">${esc(name)}</span>` : ''}
@@ -898,21 +949,6 @@
       navigate({ focusTeam: team, selectedMatch: null });
     };
 
-    const sourceEl = document.getElementById('schedule-source');
-    if(sourceEl) sourceEl.onchange = ()=>{
-      state.scheduleSource = sourceEl.value;
-      writeLocal('pitscout_schedule_source', sourceEl.value);
-      loadSchedule();
-    };
-
-    // Shares the key settings.html saves, so it only ever gets typed once.
-    const tbaKeyEl = document.getElementById('tba-key');
-    if(tbaKeyEl) tbaKeyEl.onchange = ()=>{
-      state.tbaKey = tbaKeyEl.value;
-      writeLocal('pitscout_tba_key', tbaKeyEl.value);
-      loadSchedule();
-    };
-
     const unplayedEl = document.getElementById('only-unplayed');
     if(unplayedEl) unplayedEl.onchange = ()=>{ state.onlyUnplayed = unplayedEl.checked; render(); };
 
@@ -922,7 +958,7 @@
       // quals rank moves every match, which is the reason to press it.
       epaCache = {}; qualRankCache = {};
       statsState = { key: null, pending: false };
-      loadStats(state.teamList.eventCode, state.teamList.epaCountry);
+      loadStats();
       loadSchedule();
     };
   }
@@ -939,16 +975,12 @@
 
   window.addEventListener('hashchange', applyHash);
 
-  // Schedules shift during an event, so the list keeps itself current.
-  // Paused while a preview is open — the preview re-derives from the
-  // match key, so a refetch under it would be invisible work.
-  setInterval(()=>{
-    if(!state.selectedMatch && !state.scheduleLoading && (state.teamList.eventCode||"").trim()) loadSchedule();
-  }, AUTO_REFRESH_MS);
-
+  // Schedules shift during an event (matches replayed, timings slipping),
+  // but only on request — the Refresh button or a page reload — rather
+  // than on a timer.
   render();
   startListening();
-  subscribeTeamList();   // loads the event code, which kicks off loadSchedule()
+  subscribeEvents();   // loads the active event, which kicks off loadSchedule()
 </script>
 </body>
 </html>

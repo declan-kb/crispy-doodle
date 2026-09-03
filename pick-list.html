@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<!--
+  SCOUT — PICK LIST
+  =================
+  The event's roster ranked by EPA or a custom order, for alliance
+  selection: do-not-pick, already-picked, reordering, and CSV export.
+
+  Must be served over http(s) — the GitHub Pages URL, or
+  `python3 -m http.server 8000` in this folder. Off disk it renders
+  blank: a module script can't import a sibling .js from a file://
+  origin. The #offline-note block below says so on screen.
+
+  Sibling files:
+    - style.css           — all CSS, shared with the pages below.
+    - team-list-store.js  — Firebase connection + team-list doc helpers,
+                            shared with index.html and settings.html.
+                            firebaseConfig goes there.
+    - index.html          — Scouting Data: the event's teams, scouted or
+                            not, plus the one-team scouting form. Linked
+                            from the tab bar; a team number here links to
+                            index.html#team=NNNN to fill in or edit it.
+    - schedule.html       — one team's match schedule and a per-match
+                            preview of everyone's scouting data. Linked
+                            from the tab bar.
+    - settings.html       — team-list admin. Not linked from the tab bar
+                            below; see its header for why.
+
+  This file: <head> links style.css, <body> is an empty #app div, and
+  the module script holds — in order — EPA/quals-rank lookups, state,
+  team-list logic, render functions, attachHandlers, startup.
+
+  Firestore:
+    - 'pit-reports': one doc per team, keyed by team number. Read-only
+      here — status, notes, drivebase, shooter and climb columns come
+      from it, but this page never writes a report; index.html owns
+      that.
+    - 'settings/event-index': every configured event's settings, and
+      which one is active. This page follows the active event; only
+      settings.html changes it.
+    - 'settings/event--<id>': that event's roster, plus do-not-pick and
+      picked marks, custom order, and EPA/quals-rank caches. One doc per
+      event, so switching events doesn't overwrite the last one's pick
+      list. EPA and quals rank are cached rather than imported — quals
+      rank shifts as matches are played, so both are fetched live. This
+      page is the one writer of that cache; schedule.html reads it
+      read-only.
+
+  render() rebuilds all of #app from `state`, then attachHandlers()
+  rebinds listeners. New interactive elements need a handler there.
+  index.html and settings.html work the same way.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pit Scout — Pick List</title>
+<link rel="icon" type="image/png" href="Circular Logo.png">
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="setup-banner" style="display:none; max-width:980px; margin:24px auto 0 auto; padding:0 24px;">
+  <div style="background:#2a2117; border:1px solid #6b4d1c; border-left:3px solid #f4b400; border-radius:4px; padding:18px 20px; font-family:'Inter',system-ui,sans-serif; color:#ecedec;">
+    <div style="font-family:'Barlow Condensed',sans-serif; font-weight:600; font-size:19px; margin-bottom:6px;">Firebase not configured yet</div>
+    <p style="font-size:13.5px; line-height:1.55; color:#c9cacb; margin:0 0 10px 0;">
+      This app needs a free Firebase project so scouting data can sync across everyone's devices.
+      Open <code style="background:#1e2023; padding:1px 6px; border-radius:3px;">team-list-store.js</code>, find the
+      <code style="background:#1e2023; padding:1px 6px; border-radius:3px;">firebaseConfig</code> object near the top, and paste in your project's
+      config values. The setup steps are in that file's header comment.
+    </p>
+  </div>
+</div>
+
+<!-- Replaces the blank page you'd otherwise get opening this off disk,
+     where the module import is blocked and #app never fills. Inline
+     styles and a classic script, since style.css hasn't loaded either. -->
+<div id="offline-note" style="display:none; max-width:760px; margin:60px auto; padding:0 24px; font-family:system-ui,sans-serif; color:#ecedec;">
+  <div style="background:#2a2117; border:1px solid #6b4d1c; border-left:3px solid #f4b400; border-radius:4px; padding:20px 22px;">
+    <div style="font-weight:600; font-size:19px; margin-bottom:8px;">This page needs to be served, not opened directly</div>
+    <p style="font-size:14px; line-height:1.6; color:#c9cacb; margin:0 0 12px 0;">
+      The app is split across <code>style.css</code> and <code>team-list-store.js</code>, and browsers refuse to load
+      those from a <code>file://</code> or <code>data:</code> page &mdash; so nothing renders.
+    </p>
+    <p style="font-size:14px; line-height:1.6; color:#c9cacb; margin:0;">
+      Use the GitHub&nbsp;Pages URL, or run this in the project folder and open
+      <code>http://localhost:8000</code>:
+    </p>
+    <pre style="background:#1e2023; padding:10px 12px; border-radius:3px; font-size:13px; overflow-x:auto; margin:10px 0 0 0;">python3 -m http.server 8000</pre>
+  </div>
+</div>
+<script>
+  // Not a module — must still run when the module import is blocked.
+  if(location.protocol !== 'http:' && location.protocol !== 'https:'){
+    document.getElementById('offline-note').style.display = 'block';
+    document.body.style.background = '#171d26';   // style.css isn't loaded here
+  }
+</script>
+
+<script type="module">
+  // Firebase connection and event-document helpers, shared with
+  // index.html and settings.html. 'pit-reports' is read here too, for
+  // the status/notes/drivebase/shooter/climb columns, but never written.
+  import {
+    db, fb, isConfigured, esc, teamCellClass, EPA_YEAR,
+    normalizeEvent, activeEventOf, activeEventTitle, isAllTeamsEvent,
+    resolveTbaKey, eventDataDocId,
+    subscribeEventIndexStore, subscribeEventDataStore, saveEventDataStore,
+    fetchEventStats
+  } from './team-list-store.js';
+
+  if(!isConfigured) document.getElementById('setup-banner').style.display = 'block';
+
+  // Pick List spots that get a rank number: 8 captains + 8 first picks
+  // + 8 second picks. Teams past this still show, just unnumbered.
+  const TOP_RANKED_COUNT = 24;
+
+  // ================= EPA + QUALS RANK =================
+  // Which source can answer for an event lives in fetchEventStats
+  // (team-list-store.js) — in-season events come from Statbotics, and
+  // an event marked offseason takes EPA from Statbotics' season-long
+  // ratings and quals rank from The Blue Alliance's rankings, since
+  // Statbotics doesn't index those events at all.
+  //
+  // Both caches sit outside `state` — they're lookups, not report data
+  // — keyed by team number: epaCache { "254": {status:"ok", epa:51.7,
+  // percentile:0.997} }, qualRankCache { "254": {status:"ok", rank:3,
+  // eventCode:"2026casf"} }. The eventCode on a rank entry means
+  // changing the event invalidates stale ranks. Results persist to the
+  // active event's doc as `epa` / `qualRank`, so a page load renders
+  // from cache while the refetch is in flight. schedule.html hydrates
+  // from that same cache read-only.
+  let epaCache = {};
+  let qualRankCache = {};
+
+  // The event the bulk fetch last ran for, so repeat snapshots don't
+  // refire it, plus an in-flight flag. lastStats holds the most recent
+  // result so it can be persisted once the roster is known, and
+  // statsPersisted records that it already has been.
+  let bulkState = { key: null, pending: false };
+  let lastStats = null;
+  let statsPersisted = false;
+
+  // Fills both caches and persists the result as a single updateDoc.
+  // Runs on every event snapshot and on the refresh button.
+  async function loadBulkStats(){
+    const ev = state.event;
+    const key = [state.index.activeEventId, ev.code, ev.epaCountry, ev.offseason ? 'off' : 'on'].join('|');
+    if(bulkState.pending || bulkState.key === key) return;
+    bulkState = { key, pending: true };
+    try{
+      const stats = await fetchEventStats(ev, resolveTbaKey(state.index));
+      // Cache everyone in memory — free, and it covers roster additions
+      // without another fetch.
+      Object.keys(stats.epa).forEach(team => {
+        const entry = stats.epa[team];
+        epaCache[team] = { status: "ok", epa: entry.epa, percentile: entry.percentile };
+      });
+      Object.keys(stats.qualRank).forEach(team => {
+        const entry = stats.qualRank[team];
+        qualRankCache[team] = { status: "ok", rank: entry.rank, eventCode: entry.eventCode };
+      });
+      lastStats = stats;
+      statsPersisted = false;
+      state.rankSource = stats.rankSource;
+      state.statsUpdatedAt = new Date().toISOString();
+      bulkState.pending = false;
+      render();
+      persistStats();
+    }catch(e){
+      // Non-fatal and self-healing: clearing `key` lets the next
+      // snapshot retry. The Pick List renders from whatever's cached.
+      bulkState = { key: null, pending: false };
+      console.warn('Bulk stats lookup failed', e);
+      render();
+    }
+  }
+
+  // Persists the last fetch, filtered to the roster so the doc's maps
+  // keep mirroring the list. Called again when the roster doc lands:
+  // loadBulkStats runs off the event-index snapshot, which arrives
+  // first, so on a cold load the roster isn't known yet when the fetch
+  // returns and there'd be nothing to write.
+  function persistStats(){
+    // Write at most once per fetch. Without this the write below lands
+    // as a new snapshot, onEventData runs again, and it writes again —
+    // an endless write/re-render loop. The flag is only set once a write
+    // actually goes out, so an early return here (no roster yet) still
+    // lets the next snapshot persist.
+    if(!lastStats || statsPersisted) return;
+    const roster = new Set((state.teamList.teams||[]).map(t => String(t.team)));
+    if(!roster.size) return;
+    const patch = {};
+    Object.keys(lastStats.epa).forEach(team => {
+      const entry = lastStats.epa[team];
+      if(roster.has(team) && entry.epa != null) patch['epa.' + team] = entry;
+    });
+    Object.keys(lastStats.qualRank).forEach(team => {
+      const entry = lastStats.qualRank[team];
+      if(roster.has(team)) patch['qualRank.' + team] = entry;
+    });
+    statsPersisted = true;
+    saveBulkStats(patch);
+  }
+
+  // The whole bulk result in one updateDoc. Dotted paths, so it merges
+  // into the `epa` / `qualRank` maps instead of replacing them.
+  // Non-fatal — a failure just means no cache for next time.
+  async function saveBulkStats(patch){
+    if(!isConfigured || !state.index.activeEventId || !Object.keys(patch).length) return;
+    try{
+      const ref = fb.doc(db, 'settings', eventDataDocId(state.index.activeEventId));
+      await fb.updateDoc(ref, Object.assign({ updatedAt: new Date().toISOString() }, patch));
+    }catch(e){
+      console.warn('Could not persist bulk Statbotics lookup', e);
+    }
+  }
+
+  // ====================== APP STATE ======================
+  // render() builds HTML from this; handlers mutate it and call render().
+  let state = {
+    reports: [],               // one per team, doc id = team number; synced by startListening() — read-only here
+    loaded: false,             // first snapshot (or no-config fallback) has arrived
+    indexLoaded: false,        // first event-index snapshot has arrived — until then the topbar says "Loading…" rather than naming an event it doesn't know yet
+    loadError: null,           // set if the reports listener fails
+
+    // ---- List filters ----
+    rankSearch: "",
+    rankHideDNP: false,
+    rankHidePicked: false,
+
+    // ---- Events, synced from 'settings/event-index' ----
+    index: { activeEventId: "", events: {}, tbaKey: "" },
+    event: normalizeEvent(null),   // the active event's settings
+    rankSource: null,              // "statbotics" | "tba" — which one answered
+    statsUpdatedAt: null,          // ISO timestamp of the last EPA/quals-rank fetch — hydrated from the doc, then kept fresh by loadBulkStats
+
+    // ---- The active event's roster, synced from its own doc ----
+    teamList: { teams: [], doNotPick: {}, picked: {}, order: [] },
+    teamListError: null
+  };
+
+  // ====================== FIRESTORE SYNC: REPORTS ======================
+  // Live listener on 'pit-reports' — any device's write re-renders this
+  // page's status/notes/drivebase/shooter/climb columns. Read-only:
+  // index.html owns writing reports.
+  function startListening(){
+    if(!isConfigured){
+      state.loaded = true;
+      render();
+      return;
+    }
+    const colRef = fb.collection(db, 'pit-reports');
+    fb.onSnapshot(colRef, (snapshot)=>{
+      const rows = [];
+      snapshot.forEach(docSnap=>{
+        rows.push(Object.assign({ id: docSnap.id }, docSnap.data()));
+      });
+      state.reports = rows;
+      state.loaded = true;
+      render();
+    }, (err)=>{
+      state.loaded = true;
+      state.loadError = "Couldn't connect to the shared database. Check the Firestore rules and config.";
+      render();
+    });
+  }
+
+  // The team's report, or undefined. Doc id is the team number, so this
+  // is a direct lookup rather than a field match.
+  function reportForTeam(team){
+    return state.reports.find(r => r.id === team);
+  }
+
+  // Scout-status badge. Mirrors index.html's: each status is matched
+  // exactly and anything else renders as-written, so reports saved
+  // before the statuses were renamed still show their own text rather
+  // than being silently relabelled.
+  function statusTagHtml(rep){
+    if(!rep || !rep.status) return `<span class="tag" style="opacity:0.55;">Not scouted</span>`;
+    let tag;
+    if(rep.status === 'Pre-scouted') tag = `<span class="tag prescouted">Pre-scouted</span>`;
+    else if(rep.status === 'Pit-scouted') tag = `<span class="tag pit-scouted">Pit-scouted</span>`;
+    else if(rep.status === 'Match-scouted') tag = `<span class="tag match-scouted">Match-scouted</span>`;
+    else tag = `<span class="tag">${esc(rep.status)}</span>`;
+    return tag + otherEventTagHtml(rep);
+  }
+
+  // Pit reports aren't scoped to an event — a robot is mostly the same
+  // machine from one competition to the next, so its report follows the
+  // team rather than being re-collected. What changes is how much you
+  // trust it, so a report collected somewhere else is tagged with where.
+  function otherEventTagHtml(rep){
+    if(!rep || !rep.eventId || !state.index.activeEventId) return '';
+    if(rep.eventId === state.index.activeEventId) return '';
+    const where = (rep.eventCode || '').trim() || 'another event';
+    return ` <span class="tag other-event" title="Collected at ${esc(where)}, not at this event — the robot may have changed since">${esc(where)}</span>`;
+  }
+
+  // ====================== CSV EXPORT ======================
+  // Quotes a value only if it contains a comma, quote, or newline.
+  function csvEscape(v){
+    const s = String(v===undefined||v===null?"":v);
+    if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+    return s;
+  }
+
+  // ====================== EVENTS + TEAM LIST ======================
+  // Synced from the active event's doc. Do-not-pick, picked, and custom
+  // order live in that same doc. EPA and quals rank don't — they use
+  // epaCache/qualRankCache above. Events and their rosters are set up in
+  // settings.html; this page only follows whichever is active.
+  let unsubEventData = ()=>{};
+  let currentEventId = null;
+
+  // The index carries every event's settings and which one is active.
+  // Switching events re-subscribes the roster doc underneath.
+  function subscribeEvents(){
+    subscribeEventIndexStore((index)=>{
+      state.index = index;
+      state.indexLoaded = true;
+      state.event = activeEventOf(index);
+      state.teamListError = null;
+
+      if(index.activeEventId !== currentEventId){
+        currentEventId = index.activeEventId;
+        // Nothing carries across events: a different event means a
+        // different roster and, more importantly, different quals ranks.
+        epaCache = {}; qualRankCache = {};
+        bulkState = { key: null, pending: false };
+        lastStats = null; statsPersisted = false;
+        state.teamList = { teams: [], doNotPick: {}, picked: {}, order: [] };
+        unsubEventData();
+        // The all-teams pseudo-event has no roster doc: "" gives the
+        // same empty roster without a listener on a document that can
+        // never exist.
+        const dataEventId = isAllTeamsEvent(currentEventId) ? "" : currentEventId;
+        unsubEventData = subscribeEventDataStore(dataEventId, onEventData, ()=>{
+          state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
+          render();
+        });
+      }
+      // Keyed on the event's settings, so this no-ops unless the code,
+      // country or offseason flag actually changed.
+      loadBulkStats();
+      render();
+    }, ()=>{
+      state.indexLoaded = true;
+      state.teamListError = "Couldn't sync events (check Firestore rules for the 'settings' collection).";
+      render();
+    });
+  }
+
+  function onEventData(d){
+    state.teamList = {
+      teams: d.teams || [],
+      doNotPick: d.doNotPick || {},
+      picked: d.picked || {},
+      order: d.order || []
+    };
+    state.teamListError = null;
+    // Hydrate epaCache from the doc so a page load doesn't refetch.
+    // Only fills teams with no local entry, so an in-flight fetch or a
+    // fresher result from this session isn't clobbered.
+    const epaData = d.epa || {};
+    Object.keys(epaData).forEach(team => {
+      if(!epaCache[team]) epaCache[team] = { status: "ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
+    });
+    // Same for quals rank, but only entries fetched for this event's
+    // code — a past code's rank would be wrong, and loadBulkStats
+    // refetches for the new one anyway.
+    const qualRankData = d.qualRank || {};
+    Object.keys(qualRankData).forEach(team => {
+      const entry = qualRankData[team];
+      if(!qualRankCache[team] && entry && entry.eventCode === state.event.code){
+        qualRankCache[team] = { status: "ok", rank: entry.rank, eventCode: entry.eventCode };
+      }
+    });
+    // Ahead of the render so `pending` is set before the Pick List
+    // paints. Fresher than the values hydrated above, and only one
+    // request, so it runs on every load.
+    loadBulkStats();
+    // The roster is known now, so anything already fetched can be
+    // written back.
+    persistStats();
+    render();
+  }
+
+  // Partial update to the active event's doc. The subscription above
+  // picks the change back up; callers update state.teamList
+  // optimistically.
+  async function saveTeamList(patch){
+    // "All scouted teams" has no roster doc of its own — nothing to
+    // write to, and writing anyway would leave a junk document behind.
+    if(isAllTeamsEvent(state.index.activeEventId)) return;
+    await saveEventDataStore(state.index.activeEventId, patch, ()=>{
+      state.teamListError = "Couldn't save the team list — check your connection and Firestore rules.";
+      render();
+    });
+  }
+
+  // Default pick order: highest EPA first, no-EPA teams last, ties by
+  // team number. Reads epaCache; doesn't fetch.
+  function epaSortCompare(a, b){
+    const ea = epaCache[a] && epaCache[a].status === 'ok' && epaCache[a].epa != null ? epaCache[a].epa : null;
+    const eb = epaCache[b] && epaCache[b].status === 'ok' && epaCache[b].epa != null ? epaCache[b].epa : null;
+    if(ea != null && eb != null) return eb - ea;
+    if(ea != null) return -1;
+    if(eb != null) return 1;
+    return Number(a) - Number(b);
+  }
+
+  // Team numbers in display order: the saved custom order if there is
+  // one, with teams it predates appended by EPA; otherwise an EPA sort.
+  // Recomputed each render so it stays live as EPA fetches land.
+  function displayRankOrder(){
+    const teamKeys = state.teamList.teams.map(t => t.team);
+    if(state.teamList.order && state.teamList.order.length){
+      const known = new Set(teamKeys);
+      const kept = state.teamList.order.filter(t => known.has(t));
+      const extra = teamKeys.filter(t => !kept.includes(t)).sort(epaSortCompare);
+      return kept.concat(extra);
+    }
+    return teamKeys.slice().sort(epaSortCompare);
+  }
+
+  // Maps a team to its 0-based rank position, for teams that actually
+  // have one. `order` holds only explicitly-ranked teams — nothing is
+  // ranked until someone types a number in — so this mirrors
+  // displayRankOrder's `kept` filter rather than a plain sort, and a team
+  // missing from the map is unranked.
+  function rankPositions(){
+    const known = new Set(state.teamList.teams.map(t => t.team));
+    // Capped to TOP_RANKED_COUNT — a leftover order array longer than
+    // that (e.g. from before this ranking model existed) shouldn't hand
+    // out rank 25+ numbers that were never meant to exist.
+    const kept = (state.teamList.order||[]).filter(t => known.has(t)).slice(0, TOP_RANKED_COUNT);
+    const map = {};
+    kept.forEach((team, i) => { map[team] = i; });
+    return map;
+  }
+
+  // Sets a team's rank from typed input: pulls it out of the order array
+  // (wherever it was), then reinserts it at the requested 1-based
+  // position, clamped to 1..TOP_RANKED_COUNT and to the number of
+  // already-ranked teams so there's never a gap. Clearing the field (or
+  // typing something that isn't a number) removes it from `order`
+  // entirely, leaving it unranked — this is the only way to rank or
+  // unrank a team now that nothing is ranked by default.
+  function setTeamRank(team, rawValue){
+    const known = new Set(state.teamList.teams.map(t => t.team));
+    let order = (state.teamList.order||[]).filter(t => known.has(t) && t !== team);
+
+    const trimmed = String(rawValue).trim();
+    if(trimmed !== ""){
+      const parsed = parseInt(trimmed, 10);
+      if(Number.isFinite(parsed)){
+        const pos = Math.max(1, Math.min(parsed, TOP_RANKED_COUNT));
+        const insertAt = Math.min(pos - 1, order.length);
+        order = order.slice(0, insertAt).concat([team], order.slice(insertAt));
+      }
+    }
+
+    state.teamList = Object.assign({}, state.teamList, { order });
+    render();
+    saveTeamList({ order });
+  }
+
+  // Drops every explicit rank, returning the whole roster to unranked.
+  function clearAllRanks(){
+    state.teamList = Object.assign({}, state.teamList, { order: [] });
+    render();
+    saveTeamList({ order: [] });
+  }
+
+  // Toggles a team's "do not pick" mark.
+  function toggleDNP(team){
+    const current = Object.assign({}, state.teamList.doNotPick);
+    if(current[team]) delete current[team]; else current[team] = true;
+    state.teamList = Object.assign({}, state.teamList, { doNotPick: current });
+    render();
+    saveTeamList({ doNotPick: current });
+  }
+
+  // Marks a team off the board during alliance selection — picked by
+  // anyone, independent of do-not-pick.
+  function togglePicked(team){
+    const current = Object.assign({}, state.teamList.picked);
+    if(current[team]) delete current[team]; else current[team] = true;
+    state.teamList = Object.assign({}, state.teamList, { picked: current });
+    render();
+    saveTeamList({ picked: current });
+  }
+
+  // Search and hide toggles over displayRankOrder. Shared by
+  // renderRankTable and exportPickListCSV.
+  function filteredRankRows(){
+    const order = displayRankOrder();
+    let teams = order.map(team => state.teamList.teams.find(t => t.team === team)).filter(Boolean);
+    if(state.rankHideDNP){
+      teams = teams.filter(t => !state.teamList.doNotPick[t.team]);
+    }
+    if(state.rankHidePicked){
+      teams = teams.filter(t => !state.teamList.picked[t.team]);
+    }
+    if(state.rankSearch.trim()){
+      const q = state.rankSearch.trim().toLowerCase();
+      teams = teams.filter(t => {
+        const rep = reportForTeam(t.team);
+        return t.team.toLowerCase().includes(q) ||
+          (t.teamName||"").toLowerCase().includes(q) ||
+          (rep && (rep.teamName||"").toLowerCase().includes(q));
+      });
+    }
+    return teams;
+  }
+
+  // Downloads the filtered pick list: position, team, EPA, scouting
+  // highlights, do-not-pick.
+  function exportPickListCSV(){
+    const rows = filteredRankRows();
+    if(!rows.length) return;
+    const rankMap = rankPositions();
+    const header = ["Pick #","Team #","Team Name","EPA","Event Quals Rank","Do Not Pick","Already Picked","Status","Drivebase","Shooter","Climb","Notes"];
+    const lines = [header.map(csvEscape).join(",")];
+    rows.forEach((t)=>{
+      const rep = reportForTeam(t.team);
+      const epaEntry = epaCache[t.team];
+      const epa = epaEntry && epaEntry.status === 'ok' && epaEntry.epa != null ? epaEntry.epa.toFixed(1) : "";
+      const qualRankEntry = qualRankCache[t.team];
+      const qualRank = qualRankEntry && qualRankEntry.status === 'ok' && qualRankEntry.rank != null ? qualRankEntry.rank : "";
+      const rankIdx = rankMap[t.team];
+      lines.push([
+        rankIdx != null ? rankIdx+1 : "", t.team, (rep && rep.teamName) || t.teamName || "", epa, qualRank,
+        state.teamList.doNotPick[t.team] ? "Yes" : "No",
+        state.teamList.picked[t.team] ? "Yes" : "No",
+        rep ? rep.status : "Not scouted",
+        rep ? (rep.drivebase||"") : "",
+        rep ? (rep.shooterType||"") : "",
+        rep ? (rep.climbLevel||"") : "",
+        rep ? (rep.impressions||"") : ""
+      ].map(csvEscape).join(","));
+    });
+    const csv = lines.join("\r\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pick_list.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }
+
+  // ====================== RENDER ======================
+  // Rebuilds the page from `state` and rebinds listeners, after every
+  // state change. No diffing — the whole DOM is thrown away each time.
+  function render(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
+            <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
+            ${brandSubHtml()}
+          </div>
+          <div class="tabs">
+            <a class="tab-btn" href="index.html">Scouting Data</a>
+            <span class="tab-btn active">Pick List${state.teamList.teams.length ? ' ('+state.teamList.teams.length+')' : ''}</span>
+            <a class="tab-btn" href="schedule.html">Match Schedule</a>
+          </div>
+        </div>
+      </div>
+      <div class="wrap">
+        ${(!state.loaded || !state.indexLoaded) ? `<div class="loading-note">Loading…</div>` : renderRank()}
+        <div class="footnote">Data syncs live to everyone using this app — teammates will see changes appear automatically, and can export the same data.</div>
+      </div>
+    `;
+    attachHandlers();
+  }
+
+  // The line under the wordmark: what the app is showing. Blank rather
+  // than a placeholder name when no event is set up at all.
+  function brandSubHtml(){
+    if(!state.indexLoaded) return `<div class="brand-sub">Loading…</div>`;
+    const title = activeEventTitle(state.index);
+    return title ? `<div class="brand-sub">${esc(title)}</div>` : '';
+  }
+
+  // "Updated HH:MM" next to the refresh button — when this session's own
+  // EPA/quals-rank fetch last landed, in the viewer's local time.
+  // Deliberately not sourced from the event doc's `updatedAt`: that field
+  // is bumped by any write to the doc — a DNP toggle, a reorder — not
+  // just a stats fetch, so it can't tell you how fresh the numbers are.
+  // Always renders something, even before the first fetch resolves or
+  // while a refresh is in flight, so the toolbar's other buttons don't
+  // shift when the text does.
+  function statsUpdatedHtml(){
+    const text = state.statsUpdatedAt
+      ? 'Updated ' + new Date(state.statsUpdatedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+      : (bulkState.pending ? 'Updating…' : 'Updated —');
+    return `<span class="dim" style="font-size:12.5px; white-space:nowrap; display:inline-block; min-width:90px; text-align:right;">${esc(text)}</span>`;
+  }
+
+  // Filter toolbar plus the ranked table. Roster, order and do-not-pick
+  // all come from state.teamList.
+  function renderRank(){
+    const totalTeams = state.teamList.teams.length;
+    const dnpCount = Object.keys(state.teamList.doNotPick||{}).filter(k => state.teamList.doNotPick[k]).length;
+    const pickedCount = Object.keys(state.teamList.picked||{}).filter(k => state.teamList.picked[k]).length;
+    const errorMsg = state.teamListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.teamListError)}</div>` : '';
+
+    if(!totalTeams){
+      // A pick list is per-event by nature — it ranks the field you're
+      // playing — so "All scouted teams" has none. Say that rather than
+      // sending someone off to load a roster that already exists.
+      return errorMsg + `<div class="empty-state">
+        <h3>No teams loaded</h3>
+        <p>${isAllTeamsEvent(state.index.activeEventId)
+            ? `A pick list belongs to one event. Pick that event on the settings page (open <code>settings.html</code>) to see its pick list.`
+            : state.index.activeEventId
+            ? `Load this event's teams on the settings page (open <code>settings.html</code>) to build a pick list.`
+            : `Set up an event on the settings page (open <code>settings.html</code>) to build a pick list.`}</p>
+      </div>`;
+    }
+
+    const rows = filteredRankRows();
+    const rankedCount = Object.keys(rankPositions()).length;
+    const toolbar = `
+      <div class="data-toolbar">
+        <input type="text" id="rank-search" placeholder="Search team # or name" value="${esc(state.rankSearch)}">
+        <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-dnp" ${state.rankHideDNP?'checked':''}><label for="rank-hide-dnp" style="margin:0;">Hide do-not-pick</label></div>
+        <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-picked" ${state.rankHidePicked?'checked':''}><label for="rank-hide-picked" style="margin:0;">Hide picked</label></div>
+        <div class="spacer"></div>
+        ${statsUpdatedHtml()}
+        <button class="btn-secondary" id="refresh-stats-btn" title="EPA and quals rank are cached — click to re-fetch both from Statbotics">Refresh event data</button>
+        <button class="btn-secondary" id="rank-clear-ranks-btn" title="Unrank every team and start over">Clear all ranks</button>
+        <button class="btn-export" id="rank-export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
+      </div>
+      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'} · <b>${rankedCount}</b> of <b>${totalTeams}</b> ranked${dnpCount ? ` · <b>${dnpCount}</b> marked do-not-pick` : ''}${pickedCount ? ` · <b>${pickedCount}</b> already picked` : ''}</div>
+    `;
+
+    const body = rows.length ? renderRankTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search or filter.</p></div>`;
+    return errorMsg + toolbar + body;
+  }
+
+  // Row actions (reorder, do-not-pick) lead on the left so they're
+  // reachable without scrolling sideways, then rank, team, EPA, quals
+  // rank, status, key scouting fields, notes. The team number links out
+  // to index.html to fill in or edit its scouting data.
+  // Team names beyond this just widen the table without adding much —
+  // "Barker Redbacks" (a real team on this roster) is the longest one
+  // worth showing in full. Truncated names keep the full name in a
+  // title tooltip.
+  const TEAM_NAME_MAX = "Barker Redbacks".length;
+  function truncateTeamName(name){
+    if(!name || name.length <= TEAM_NAME_MAX) return name;
+    return name.slice(0, TEAM_NAME_MAX - 1).trimEnd() + '…';
+  }
+
+  function renderRankTable(rows){
+    // Rank/team columns lead so they're visible without scrolling on a
+    // narrow screen; DNP/Picked trail at the end since they're used far
+    // less often than just scanning the list.
+    const head = `<th title="Type a rank 1–${TOP_RANKED_COUNT} to place a team, or clear it to unrank">Rank</th><th>Team #</th><th>Team Name</th><th title="Statbotics ${EPA_YEAR} EPA">EPA</th><th title="Qualification-match rank at the event${state.rankSource === 'tba' ? ', from The Blue Alliance' : ''} — needs an event code set on the settings page">Quals Rank</th><th>Status</th><th>Notes</th><th>Drivebase</th><th>Shooter</th><th>Climb</th><th>Actions</th>`;
+    const rankMap = rankPositions();
+    // Teams are unranked until someone types a number in — nothing is
+    // pre-numbered from an EPA sort. Ranked teams sort to the top (see
+    // displayRankOrder); this is where the divider between them and the
+    // still-unranked rest of the roster goes.
+    const rankedCount = Math.min(Object.keys(rankMap).length, TOP_RANKED_COUNT);
+    const body = rows.map((t,i)=>{
+      const rep = reportForTeam(t.team);
+      const isDNP = !!state.teamList.doNotPick[t.team];
+      const isPicked = !!state.teamList.picked[t.team];
+      const name = (rep && rep.teamName) || t.teamName || "—";
+      const notes = rep ? rep.impressions : "";
+      const scoutedCell = statusTagHtml(rep);
+      const rankIdx = rankMap[t.team];
+      const rowClasses = [isDNP ? 'dnp-row' : '', isPicked ? 'picked-row' : '', (rankedCount > 0 && i === rankedCount) ? 'rank-cutoff' : ''].filter(Boolean).join(' ');
+      return `
+        <tr class="${rowClasses}">
+          <td class="dim"><input type="number" class="rank-input" data-rank-team="${esc(t.team)}" min="1" max="${TOP_RANKED_COUNT}" placeholder="—" value="${rankIdx!=null ? rankIdx+1 : ''}" title="Type a rank 1–${TOP_RANKED_COUNT}, or clear to unrank"></td>
+          <td class="${teamCellClass('team-cell', t.team)}"><a href="index.html#team=${encodeURIComponent(t.team)}" title="Fill in / view this team's scouting data">${esc(t.team)}</a></td>
+          <td title="${esc(name)}">${esc(truncateTeamName(name))}</td>
+          <td class="dim">${epaCellHtml(t.team)}</td>
+          <td class="dim">${qualRankCellHtml(t.team)}</td>
+          <td>${scoutedCell}</td>
+          <td class="notes-cell">${esc(notes || '—')}</td>
+          <td class="dim">${esc(rep ? (rep.drivebase||'—') : '—')}</td>
+          <td class="dim">${esc(rep ? (rep.shooterType||'—') : '—')}</td>
+          <td class="dim">${esc(rep ? (rep.climbLevel||'—') : '—')}</td>
+          <td class="dnp-actions">
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button class="btn-tiny ${isDNP?'active':''}" data-toggle-dnp="${esc(t.team)}" title="Toggle do-not-pick">${isDNP?'Unmark DNP':'DNP'}</button>
+              <button class="btn-tiny ${isPicked?'picked-active':''}" data-toggle-picked="${esc(t.team)}" title="Toggle already picked">${isPicked?'Unpick':'Picked'}</button>
+            </div>
+          </td>
+        </tr>`;
+    }).join("");
+    return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  // EPA cell — a pure read of epaCache, which loadBulkStats fills.
+  // Percentile only comes back from the country lookup; the event one
+  // has no field for it, so the cell just omits it there.
+  function epaCellHtml(teamNumber){
+    const entry = epaCache[(teamNumber||"").trim()];
+    if(bulkState.pending && !entry) return `<span class="epa-loading">…</span>`;
+    if(!entry || entry.status === "error" || entry.epa==null) return "—";
+    const pct = entry.percentile!=null ? ` <span class="epa-pct">(${Math.round(entry.percentile*100)}%ile)</span>` : "";
+    return `${entry.epa.toFixed(1)}${pct}`;
+  }
+
+  // Quals-rank cell — a pure read of qualRankCache, filled from
+  // Statbotics at an in-season event and from TBA's rankings at an
+  // offseason one. Rows show "—" with no event code, or before the first
+  // quals match has been played.
+  function qualRankCellHtml(teamNumber){
+    const entry = qualRankCache[(teamNumber||"").trim()];
+    if(!state.event.code.trim()) return `<span title="Set an event code on the settings page to fetch quals rank">—</span>`;
+    if(state.event.offseason && !resolveTbaKey(state.index)) return `<span title="Offseason quals rank comes from The Blue Alliance — add a TBA Read API key on the settings page">—</span>`;
+    if(bulkState.pending && !entry) return `<span class="epa-loading">…</span>`;
+    if(!entry || entry.status === "error" || entry.rank==null) return "—";
+    return `#${entry.rank}`;
+  }
+
+  // ====================== EVENT HANDLERS ======================
+  // render() replaces the DOM, so listeners are rebound here at the end
+  // of it. A new input or button in renderRank/renderRankTable needs one
+  // here.
+  function attachHandlers(){
+    const rankSearchEl = document.getElementById('rank-search');
+    if(rankSearchEl) rankSearchEl.oninput = ()=>{ state.rankSearch = rankSearchEl.value; render(); };
+    const hideDnpEl = document.getElementById('rank-hide-dnp');
+    if(hideDnpEl) hideDnpEl.onchange = ()=>{ state.rankHideDNP = hideDnpEl.checked; render(); };
+    const hidePickedEl = document.getElementById('rank-hide-picked');
+    if(hidePickedEl) hidePickedEl.onchange = ()=>{ state.rankHidePicked = hidePickedEl.checked; render(); };
+    const clearRanksBtn = document.getElementById('rank-clear-ranks-btn');
+    if(clearRanksBtn) clearRanksBtn.onclick = clearAllRanks;
+    const rankExportBtn = document.getElementById('rank-export-btn');
+    if(rankExportBtn) rankExportBtn.onclick = exportPickListCSV;
+    // One request backs EPA and quals rank both, so one button.
+    const refreshStatsBtn = document.getElementById('refresh-stats-btn');
+    if(refreshStatsBtn) refreshStatsBtn.onclick = ()=>{
+      epaCache = {}; qualRankCache = {};
+      bulkState = { key: null, pending: false };
+      lastStats = null; statsPersisted = false;
+      state.statsUpdatedAt = null;
+      loadBulkStats();
+      render();
+    };
+
+    // `change` (not `input`) so typing digit-by-digit doesn't re-render
+    // the table out from under the cursor — it commits on blur or Enter.
+    document.querySelectorAll('[data-rank-team]').forEach(el=>{ el.onchange = ()=> setTeamRank(el.dataset.rankTeam, el.value); });
+    document.querySelectorAll('[data-toggle-dnp]').forEach(el=>{ el.onclick = ()=> toggleDNP(el.dataset.toggleDnp); });
+    document.querySelectorAll('[data-toggle-picked]').forEach(el=>{ el.onclick = ()=> togglePicked(el.dataset.togglePicked); });
+  }
+
+  // ====================== STARTUP ======================
+  // Paint the loading state, then start both listeners. Neither waits on
+  // input, so a refresh always restores what's saved.
+  render();
+  startListening();
+  subscribeEvents();
+</script>
+</body>
+</html>
