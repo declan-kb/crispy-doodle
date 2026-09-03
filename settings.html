@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<!--
+  SCOUT — SETTINGS (hidden page)
+  ==============================
+  Team-list admin: load/replace/clear the roster, rename or remove
+  teams, set the event code. Not linked from index.html's tab bar — it
+  can wipe the shared list, so it stays off the tab bar people click
+  through during an event. Open it directly and bookmark it.
+
+  Must be served over http(s) — the GitHub Pages URL, or
+  `python3 -m http.server 8000` here. Off disk it renders blank: module
+  scripts can't import a sibling .js from a file:// origin. See the
+  #offline-note block below.
+
+  Writes the same 'settings/team-list' doc as index.html via
+  team-list-store.js, so changes show up there immediately.
+
+  Same shape as index.html: style.css, an empty #app div, and a module
+  script holding state, mutations, render functions, attachHandlers,
+  and the startup calls.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pit Scout — Settings</title>
+<link rel="icon" type="image/png" href="Circular Logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+
+<div id="setup-banner" style="display:none; max-width:980px; margin:24px auto 0 auto; padding:0 24px;">
+  <div style="background:#2a2117; border:1px solid #6b4d1c; border-left:3px solid #f4b400; border-radius:4px; padding:18px 20px; font-family:'Inter',system-ui,sans-serif; color:#ecedec;">
+    <div style="font-family:'Barlow Condensed',sans-serif; font-weight:600; font-size:19px; margin-bottom:6px;">Firebase not configured yet</div>
+    <p style="font-size:13.5px; line-height:1.55; color:#c9cacb; margin:0 0 10px 0;">
+      This app needs a free Firebase project so the team list can sync across everyone's devices.
+      Open <code style="background:#1e2023; padding:1px 6px; border-radius:3px;">team-list-store.js</code>, find the
+      <code style="background:#1e2023; padding:1px 6px; border-radius:3px;">firebaseConfig</code> object near the top, and paste in your project's config values.
+      See the setup steps in that file's header comment for how to get them.
+    </p>
+  </div>
+</div>
+
+<!-- Replaces the blank page you'd otherwise get opening this off disk,
+     where the module import is blocked and #app never fills. Inline
+     styles and a classic script, since style.css hasn't loaded either. -->
+<div id="offline-note" style="display:none; max-width:760px; margin:60px auto; padding:0 24px; font-family:system-ui,sans-serif; color:#ecedec;">
+  <div style="background:#2a2117; border:1px solid #6b4d1c; border-left:3px solid #f4b400; border-radius:4px; padding:20px 22px;">
+    <div style="font-weight:600; font-size:19px; margin-bottom:8px;">This page needs to be served, not opened directly</div>
+    <p style="font-size:14px; line-height:1.6; color:#c9cacb; margin:0 0 12px 0;">
+      The app is split across <code>style.css</code> and <code>team-list-store.js</code>, and browsers refuse to load
+      those from a <code>file://</code> or <code>data:</code> page &mdash; so nothing renders.
+    </p>
+    <p style="font-size:14px; line-height:1.6; color:#c9cacb; margin:0;">
+      Use the GitHub&nbsp;Pages URL, or run this in the project folder and open
+      <code>http://localhost:8000</code>:
+    </p>
+    <pre style="background:#1e2023; padding:10px 12px; border-radius:3px; font-size:13px; overflow-x:auto; margin:10px 0 0 0;">python3 -m http.server 8000</pre>
+  </div>
+</div>
+<script>
+  // Not a module — must still run when the module import is blocked.
+  if(location.protocol !== 'http:' && location.protocol !== 'https:'){
+    document.getElementById('offline-note').style.display = 'block';
+    document.body.style.background = '#171d26';   // style.css isn't loaded here
+  }
+</script>
+
+<script type="module">
+  import {
+    isConfigured, esc, readLocal, writeLocal, teamCellClass, DEFAULT_EPA_COUNTRY,
+    subscribeTeamListStore, saveTeamListStore
+  } from './team-list-store.js';
+
+  if(!isConfigured){
+    document.getElementById('setup-banner').style.display = 'block';
+  }
+
+  // ====================== APP STATE ======================
+  let state = {
+    loaded: false,             // first snapshot (or no-config fallback) has arrived
+    teamList: { teams: [], doNotPick: {}, picked: {}, order: [], eventLabel: "", eventCode: "", epaCountry: DEFAULT_EPA_COUNTRY },
+    teamListError: null,
+
+    settingsEventCode: readLocal('pitscout_last_event', ''), // hydrated from the shared doc on first snapshot
+    eventCodeTouched: false,   // field typed in this session; blocks snapshot hydration
+    settingsSource: "statbotics",  // "statbotics" | "tba" | "manual"
+    tbaKey: readLocal('pitscout_tba_key', ''),                // TBA Read API key, localStorage only
+    settingsLoading: false,
+    settingsError: null,
+    settingsManualInput: "",   // textarea contents for manual team entry
+    settingsSearch: ""
+  };
+
+  // ====================== TEAM LIST SYNC ======================
+  // Wrappers around team-list-store.js, adding this page's state
+  // assignment and error surfacing.
+  function subscribeTeamList(){
+    subscribeTeamListStore((d)=>{
+      state.teamList = { teams: d.teams || [], doNotPick: d.doNotPick || {}, picked: d.picked || {}, order: d.order || [], eventLabel: d.eventLabel || "", eventCode: d.eventCode || "", epaCountry: d.epaCountry === undefined ? DEFAULT_EPA_COUNTRY : d.epaCountry };
+      state.teamListError = null;
+      // Show the doc's event code, not this browser's localStorage: a
+      // device that never typed it here would show blank while
+      // index.html's quals-rank lookup uses the saved code. Skipped
+      // once typed in, so a snapshot can't overwrite a live edit.
+      if(!state.eventCodeTouched && d.eventCode) state.settingsEventCode = d.eventCode;
+      state.loaded = true;
+      render();
+    }, (err)=>{
+      state.teamListError = "Couldn't sync the team list (check Firestore rules for the 'settings' collection).";
+      state.loaded = true;
+      render();
+    });
+  }
+
+  function saveTeamList(patch){
+    return saveTeamListStore(patch, (e)=>{
+      state.teamListError = "Couldn't save the team list — check your connection and Firestore rules.";
+      render();
+    });
+  }
+
+  // index.html's scouting form has its own copy of this; both write the
+  // shared list, so either place syncs to the other.
+  async function updateTeamName(team, newName){
+    const name = (newName||"").trim();
+    const teams = state.teamList.teams.map(t => t.team===team ? Object.assign({}, t, {teamName:name}) : t);
+    state.teamList = Object.assign({}, state.teamList, { teams });
+    render();
+    await saveTeamList({ teams });
+  }
+
+  // Display label for the topbar, e.g. "AUSC 2026". Descriptive only —
+  // never used for Statbotics/TBA lookups, unlike settingsEventCode.
+  async function updateEventLabel(value){
+    const label = (value||"").trim();
+    state.teamList = Object.assign({}, state.teamList, { eventLabel: label });
+    render();
+    await saveTeamList({ eventLabel: label });
+  }
+
+  // Country filter for index.html's bulk EPA prefetch — one Statbotics
+  // request covers every team in it, instead of one request per team.
+  // Blank falls back to per-team lookups, which is also what covers any
+  // team on the roster from outside this country.
+  async function updateEpaCountry(value){
+    const country = (value||"").trim();
+    state.teamList = Object.assign({}, state.teamList, { epaCountry: country });
+    render();
+    await saveTeamList({ epaCountry: country });
+  }
+
+  // Saves the event code without touching the roster, so quals rank can
+  // be pointed at a different event without a reload. loadTeamsFromSource
+  // saves the same field when it does reload.
+  async function updateEventCode(value){
+    const code = (value||"").trim();
+    state.teamList = Object.assign({}, state.teamList, { eventCode: code });
+    render();
+    if(code) writeLocal('pitscout_last_event', code);
+    await saveTeamList({ eventCode: code });
+  }
+
+  // doNotPick/picked/order may keep a leftover entry for the removed
+  // team; Pick List ignores team numbers not in the current roster.
+  function removeTeam(team){
+    const teams = state.teamList.teams.filter(t => t.team !== team);
+    state.teamList = Object.assign({}, state.teamList, { teams });
+    render();
+    saveTeamList({ teams });
+  }
+
+  // Loads a roster from Statbotics (no key) or TBA (needs a Read API
+  // key; covers off-season events Statbotics hasn't indexed). Quals rank
+  // isn't captured — Pick List fetches it live, keyed off the event code
+  // saved below.
+  async function loadTeamsFromSource(){
+    const code = state.settingsEventCode.trim();
+    if(!code){ state.settingsError = "Enter an event code."; render(); return; }
+    state.settingsLoading = true; state.settingsError = null; render();
+    try{
+      let teams = [];
+      if(state.settingsSource === 'statbotics'){
+        const res = await fetch(`https://api.statbotics.io/v3/team_events?event=${encodeURIComponent(code)}`);
+        if(!res.ok) throw new Error("Event not found on Statbotics.");
+        const data = await res.json();
+        if(!Array.isArray(data) || !data.length) throw new Error("No teams found for that event on Statbotics — try TBA or manual entry.");
+        teams = data.map(d => ({ team: String(d.team), teamName: d.team_name || "" }));
+      } else if(state.settingsSource === 'tba'){
+        if(!state.tbaKey.trim()) throw new Error("Enter your TBA Read API key first (get one free at thebluealliance.com/account).");
+        const res = await fetch(`https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(code)}/teams/simple`, {
+          headers: { 'X-TBA-Auth-Key': state.tbaKey.trim() }
+        });
+        if(!res.ok) throw new Error(res.status === 401 ? "Invalid TBA API key." : "Event not found on TBA — check the event code.");
+        const data = await res.json();
+        if(!Array.isArray(data) || !data.length) throw new Error("No teams found for that event on TBA.");
+        teams = data.map(d => ({ team: String(d.team_number), teamName: d.nickname || "" }));
+      } else {
+        throw new Error("Switch to Manual entry to add teams by hand.");
+      }
+      teams.sort((a,b)=> Number(a.team) - Number(b.team));
+      state.teamList = Object.assign({}, state.teamList, { teams, eventCode: code });
+      writeLocal('pitscout_last_event', code);
+      await saveTeamList({ teams, eventCode: code, source: state.settingsSource });
+    }catch(e){
+      state.settingsError = e.message || "Couldn't load teams.";
+    }
+    state.settingsLoading = false;
+    render();
+  }
+
+  // Merges the manual-entry textarea into the roster without dropping
+  // existing teams. One team per line/comma, optionally "1234 Name".
+  async function addManualTeamsToList(){
+    const lines = state.settingsManualInput.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+    if(!lines.length) return;
+    const byTeam = {};
+    state.teamList.teams.forEach(t => { byTeam[t.team] = t; });
+    lines.forEach(line => {
+      const m = line.match(/^(\d{1,6})\s*[-:]?\s*(.*)$/);
+      if(!m) return;
+      const team = m[1];
+      const name = m[2].trim() || (byTeam[team] ? byTeam[team].teamName : "");
+      byTeam[team] = { team, teamName: name };
+    });
+    const teams = Object.values(byTeam).sort((a,b)=> Number(a.team) - Number(b.team));
+    const code = state.settingsEventCode.trim();
+    // Save the event code anyway, so quals rank works for a manual
+    // roster the same as a loaded one.
+    state.teamList = Object.assign({}, state.teamList, { teams }, code ? { eventCode: code } : {});
+    state.settingsManualInput = "";
+    state.settingsError = null;
+    if(code) writeLocal('pitscout_last_event', code);
+    await saveTeamList(Object.assign({ teams, source: 'manual' }, code ? { eventCode: code } : {}));
+    render();
+  }
+
+  // Clears the roster in Firestore too, so it survives a refresh.
+  // doNotPick/picked/order are left alone. No confirm(): it silently
+  // no-ops in standalone/home-screen-PWA contexts, which made the button
+  // look broken on phones with the app added to the home screen.
+  function clearTeamList(){
+    state.teamList = Object.assign({}, state.teamList, { teams: [] });
+    render();
+    saveTeamList({ teams: [] });
+  }
+
+  // Applies the search box on top of state.teamList.teams.
+  function filteredSettingsRows(){
+    let rows = state.teamList.teams;
+    if(state.settingsSearch.trim()){
+      const q = state.settingsSearch.trim().toLowerCase();
+      rows = rows.filter(t => t.team.toLowerCase().includes(q) || (t.teamName||"").toLowerCase().includes(q));
+    }
+    return rows;
+  }
+
+  // ====================== RENDER ======================
+  function render(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
+            <div class="brand-mark">PIT SCOUT <span>/ SETTINGS</span></div>
+            ${state.teamList.eventLabel ? `<div class="brand-sub">${esc(state.teamList.eventLabel)}</div>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="wrap">
+        ${!state.loaded ? `<div class="loading-note">Loading team list…</div>` : renderSettings()}
+        <div class="footnote">This page isn't linked from the main app — bookmark it if you need it again. Changes here sync live to everyone using the app.</div>
+      </div>
+    `;
+    attachHandlers();
+  }
+
+  // Event code/source toolbar, then the roster table.
+  function renderSettings(){
+    const totalTeams = state.teamList.teams.length;
+
+    const eventLabelField = `
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <div class="field" style="max-width:320px;">
+          <label>Event label (optional)</label>
+          <input type="text" id="settings-event-label" value="${esc(state.teamList.eventLabel)}" placeholder="e.g. AUSC 2026">
+        </div>
+        <div class="field" style="max-width:260px;">
+          <label>EPA country (only used for events without Statbotics)</label>
+          <input type="text" id="settings-epa-country" value="${esc(state.teamList.epaCountry)}" placeholder="e.g. Australia" title="Pick List fetches every team in this country in one Statbotics request. Teams from anywhere else are still looked up one at a time, as is everything if this is left blank.">
+        </div>
+      </div>
+    `;
+
+    const lookupToolbar = `
+      <div class="data-toolbar">
+        <input type="text" id="settings-event-code" placeholder="Event code, e.g. 2026casf" value="${esc(state.settingsEventCode)}" style="max-width:220px;" title="Also drives index.html's Pick List live quals-rank lookup — save it with Tab/Enter even without reloading teams">
+        <select id="settings-source">
+          <option value="statbotics" ${state.settingsSource==='statbotics'?'selected':''}>Statbotics (no key needed)</option>
+          <option value="tba" ${state.settingsSource==='tba'?'selected':''}>The Blue Alliance</option>
+          <option value="manual" ${state.settingsSource==='manual'?'selected':''}>Manual entry</option>
+        </select>
+        ${state.settingsSource==='tba' ? `<input type="text" id="settings-tba-key" placeholder="TBA Read API Key" value="${esc(state.tbaKey)}" style="max-width:220px;">` : ''}
+        ${state.settingsSource!=='manual' ? `<button class="btn-secondary" id="settings-load-btn" ${state.settingsLoading?'disabled':''}>${state.settingsLoading ? 'Loading…' : 'Load teams'}</button>` : ''}
+        ${totalTeams ? `<button class="btn-secondary" id="settings-clear-btn">Clear all teams</button>` : ''}
+      </div>
+      ${state.settingsSource==='manual' ? `
+      <div class="field" style="max-width:520px; margin-bottom:16px;">
+        <label>Add teams — one per line, "1234" or "1234 Team Name"</label>
+        <textarea id="settings-manual-input" placeholder="254 Cheesy Poofs&#10;6996 Koalafied">${esc(state.settingsManualInput)}</textarea>
+        <div style="margin-top:8px;"><button class="btn-secondary" id="settings-manual-add-btn">Add teams</button></div>
+      </div>` : ''}
+      ${state.settingsError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.settingsError)}</div>` : ''}
+      ${state.teamListError ? `<div class="status-msg err" style="margin-bottom:14px;">${esc(state.teamListError)}</div>` : ''}
+      ${!isConfigured ? `<div class="status-msg err" style="margin-bottom:14px;">Firebase isn't configured — the team list won't be saved or shared.</div>` : ''}
+    `;
+
+    if(!totalTeams){
+      return eventLabelField + lookupToolbar + `
+        <div class="empty-state">
+          <h3>No teams loaded</h3>
+          <p>Enter an event code and load teams from Statbotics or TBA, or switch to Manual entry above.</p>
+        </div>`;
+    }
+
+    const rows = filteredSettingsRows();
+    const filterToolbar = `
+      <div class="data-toolbar">
+        <input type="text" id="settings-search" placeholder="Search team # or name" value="${esc(state.settingsSearch)}">
+        <div class="spacer"></div>
+      </div>
+      <div class="count-strip">Showing <b>${rows.length}</b> of <b>${totalTeams}</b> team${totalTeams===1?'':'s'}</div>
+    `;
+    const body = rows.length ? renderSettingsTable(rows) : `<div class="empty-state"><h3>No matches</h3><p>No teams match your search.</p></div>`;
+    return eventLabelField + lookupToolbar + filterToolbar + body;
+  }
+
+  // Name field commits on blur/Enter, not per keystroke — see
+  // attachHandlers. No quals rank: it's a live Pick List lookup, not
+  // part of the roster.
+  function renderSettingsTable(rows){
+    const head = `<th>Team #</th><th>Team Name</th><th></th>`;
+    const body = rows.map(t=>`
+      <tr>
+        <td class="${teamCellClass('team-cell', t.team)}">${esc(t.team)}</td>
+        <td><input type="text" data-team-name-for="${esc(t.team)}" value="${esc(t.teamName)}" placeholder="Team name"></td>
+        <td><button class="delete-btn" data-remove-team="${esc(t.team)}">Remove</button></td>
+      </tr>`).join("");
+    return `<div class="table-scroll"><table class="summary-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  // ====================== EVENT HANDLERS ======================
+  function attachHandlers(){
+    const eventLabelEl = document.getElementById('settings-event-label');
+    if(eventLabelEl) eventLabelEl.onchange = ()=> updateEventLabel(eventLabelEl.value);
+    const epaCountryEl = document.getElementById('settings-epa-country');
+    if(epaCountryEl) epaCountryEl.onchange = ()=> updateEpaCountry(epaCountryEl.value);
+    const eventCodeEl = document.getElementById('settings-event-code');
+    if(eventCodeEl){
+      eventCodeEl.oninput = ()=>{ state.settingsEventCode = eventCodeEl.value; state.eventCodeTouched = true; };
+      eventCodeEl.onchange = ()=> updateEventCode(eventCodeEl.value);
+    }
+    const sourceEl = document.getElementById('settings-source');
+    if(sourceEl) sourceEl.onchange = ()=>{ state.settingsSource = sourceEl.value; state.settingsError = null; render(); };
+    const tbaKeyEl = document.getElementById('settings-tba-key');
+    if(tbaKeyEl) tbaKeyEl.oninput = ()=>{ state.tbaKey = tbaKeyEl.value; writeLocal('pitscout_tba_key', tbaKeyEl.value); };
+    const loadBtn = document.getElementById('settings-load-btn');
+    if(loadBtn) loadBtn.onclick = loadTeamsFromSource;
+    const clearBtn = document.getElementById('settings-clear-btn');
+    if(clearBtn) clearBtn.onclick = clearTeamList;
+    const manualInputEl = document.getElementById('settings-manual-input');
+    if(manualInputEl) manualInputEl.oninput = ()=>{ state.settingsManualInput = manualInputEl.value; };
+    const manualAddBtn = document.getElementById('settings-manual-add-btn');
+    if(manualAddBtn) manualAddBtn.onclick = addManualTeamsToList;
+    const settingsSearchEl = document.getElementById('settings-search');
+    if(settingsSearchEl) settingsSearchEl.oninput = ()=>{ state.settingsSearch = settingsSearchEl.value; render(); };
+
+    document.querySelectorAll('[data-team-name-for]').forEach(el=>{
+      el.onchange = ()=> updateTeamName(el.dataset.teamNameFor, el.value);
+    });
+    document.querySelectorAll('[data-remove-team]').forEach(el=>{
+      el.onclick = ()=> removeTeam(el.dataset.removeTeam);
+    });
+  }
+
+  // ====================== STARTUP ======================
+  render();
+  subscribeTeamList();
+</script>
+</body>
+</html>
