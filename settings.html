@@ -44,6 +44,15 @@
 <link rel="icon" type="image/png" href="Circular Logo.png">
 <link rel="stylesheet" href="style.css">
 <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+
+<!-- Add to Home Screen — see index.html's copy of this block for why it's
+     duplicated per page rather than shared. -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#171d26">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Settings">
 </head>
 <body>
 <div id="app"></div>
@@ -82,6 +91,33 @@
   if(location.protocol !== 'http:' && location.protocol !== 'https:'){
     document.getElementById('offline-note').style.display = 'block';
     document.body.style.background = '#171d26';   // style.css isn't loaded here
+  } else {
+    pageLoadWatchdog();
+  }
+
+  // Safety net only — no auto-navigation. An automatic silent retry was
+  // tried here and didn't help (the real fix is Firestore closing its
+  // connection cleanly on pagehide — see team-list-store.js), and a retry
+  // loop that doesn't actually work is worse than nothing: it hides a
+  // stuck page behind fake activity instead of telling you it's stuck. So
+  // this just says so, plainly, if #app is still empty a few seconds in.
+  function pageLoadWatchdog(){
+    var appEl = document.getElementById('app');
+    if(!appEl) return;
+    setTimeout(function(){
+      if(appEl.children.length) return;   // rendered fine
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'max-width:560px; margin:80px auto; padding:0 24px; font-family:system-ui,sans-serif; color:#ecedec; text-align:center;';
+      var p = document.createElement('p');
+      p.style.cssText = 'font-size:15px; line-height:1.6; color:#c9cacb;';
+      p.textContent = "This page is stuck loading. Reloading a stuck page sometimes doesn't clear it — if Reload doesn't work, retype the address and press Enter.";
+      var btn = document.createElement('button');
+      btn.textContent = 'Reload';
+      btn.style.cssText = 'margin-top:14px; padding:11px 22px; font-size:14px; background:#f6c518; color:#1c1400; border:none; border-radius:4px; font-weight:700; cursor:pointer;';
+      btn.onclick = function(){ location.reload(); };
+      wrap.appendChild(p); wrap.appendChild(btn);
+      appEl.appendChild(wrap);
+    }, 5000);
   }
 </script>
 
@@ -92,7 +128,8 @@
     activeEventTitle, isAllTeamsEvent, ALL_TEAMS_EVENT_ID, ALL_TEAMS_LABEL,
     subscribeEventIndexStore, saveEventIndexStore, saveEventConfig,
     createEventStore, deleteEventStore,
-    subscribeEventDataStore, saveEventDataStore, fetchEventRoster
+    subscribeEventDataStore, saveEventDataStore, fetchEventRoster,
+    mergeSyncMeta, syncBadgeHtml
   } from './team-list-store.js';
 
   if(!isConfigured){
@@ -104,6 +141,8 @@
     loaded: false,             // first index snapshot (or no-config fallback) has arrived
     index: { activeEventId: "", events: {}, tbaKey: "" },
     indexError: null,
+    indexSync: { fromCache: true, hasPendingWrites: false },
+    dataSync: { fromCache: true, hasPendingWrites: false },
 
     // Which event this page is editing. Defaults to the active one, but
     // they're deliberately separate: setting up next season's event
@@ -136,9 +175,10 @@
   let unsubEventData = ()=>{};
 
   function subscribeIndex(){
-    subscribeEventIndexStore((index)=>{
+    subscribeEventIndexStore((index, meta)=>{
       state.index = index;
       state.indexError = null;
+      state.indexSync = meta;
       state.loaded = true;
       // Follow the active event until the user picks something else to
       // edit, and recover if the event being edited was deleted
@@ -166,7 +206,7 @@
     unsubEventData();
     // "All scouted teams" has no roster doc — "" gives the same empty
     // roster without a listener on a document that can never exist.
-    unsubEventData = subscribeEventDataStore(isAllTeamsEvent(state.editingEventId) ? "" : state.editingEventId, (d)=>{
+    unsubEventData = subscribeEventDataStore(isAllTeamsEvent(state.editingEventId) ? "" : state.editingEventId, (d, meta)=>{
       state.eventData = {
         teams: d.teams || [],
         doNotPick: d.doNotPick || {},
@@ -174,6 +214,7 @@
         order: d.order || []
       };
       state.dataError = null;
+      state.dataSync = meta || { fromCache: false, hasPendingWrites: false };
       render();
     }, ()=>{
       state.dataError = "Couldn't sync this event's team list.";
@@ -351,6 +392,7 @@
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ SETTINGS</span></div>
             ${!state.loaded ? `<div class="brand-sub">Loading…</div>` : (activeLabel ? `<div class="brand-sub">${esc(activeLabel)}</div>` : '')}
+            ${syncBadgeHtml(mergeSyncMeta(state.indexSync, state.dataSync))}
           </div>
         </div>
       </div>

@@ -57,6 +57,15 @@
 <link rel="icon" type="image/png" href="Circular Logo.png">
 <link rel="stylesheet" href="style.css">
 <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+
+<!-- Add to Home Screen — see index.html's copy of this block for why it's
+     duplicated per page rather than shared. -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#171d26">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pick List">
 </head>
 <body>
 <div id="app"></div>
@@ -95,6 +104,33 @@
   if(location.protocol !== 'http:' && location.protocol !== 'https:'){
     document.getElementById('offline-note').style.display = 'block';
     document.body.style.background = '#171d26';   // style.css isn't loaded here
+  } else {
+    pageLoadWatchdog();
+  }
+
+  // Safety net only — no auto-navigation. An automatic silent retry was
+  // tried here and didn't help (the real fix is Firestore closing its
+  // connection cleanly on pagehide — see team-list-store.js), and a retry
+  // loop that doesn't actually work is worse than nothing: it hides a
+  // stuck page behind fake activity instead of telling you it's stuck. So
+  // this just says so, plainly, if #app is still empty a few seconds in.
+  function pageLoadWatchdog(){
+    var appEl = document.getElementById('app');
+    if(!appEl) return;
+    setTimeout(function(){
+      if(appEl.children.length) return;   // rendered fine
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'max-width:560px; margin:80px auto; padding:0 24px; font-family:system-ui,sans-serif; color:#ecedec; text-align:center;';
+      var p = document.createElement('p');
+      p.style.cssText = 'font-size:15px; line-height:1.6; color:#c9cacb;';
+      p.textContent = "This page is stuck loading. Reloading a stuck page sometimes doesn't clear it — if Reload doesn't work, retype the address and press Enter.";
+      var btn = document.createElement('button');
+      btn.textContent = 'Reload';
+      btn.style.cssText = 'margin-top:14px; padding:11px 22px; font-size:14px; background:#f6c518; color:#1c1400; border:none; border-radius:4px; font-weight:700; cursor:pointer;';
+      btn.onclick = function(){ location.reload(); };
+      wrap.appendChild(p); wrap.appendChild(btn);
+      appEl.appendChild(wrap);
+    }, 5000);
   }
 </script>
 
@@ -107,7 +143,7 @@
     normalizeEvent, activeEventOf, activeEventTitle, isAllTeamsEvent,
     resolveTbaKey, eventDataDocId,
     subscribeEventIndexStore, subscribeEventDataStore, saveEventDataStore,
-    fetchEventStats
+    fetchEventStats, mergeSyncMeta, syncBadgeHtml, syncMeta
   } from './team-list-store.js';
 
   if(!isConfigured) document.getElementById('setup-banner').style.display = 'block';
@@ -224,6 +260,9 @@
     loaded: false,             // first snapshot (or no-config fallback) has arrived
     indexLoaded: false,        // first event-index snapshot has arrived — until then the topbar says "Loading…" rather than naming an event it doesn't know yet
     loadError: null,           // set if the reports listener fails
+    indexSync: { fromCache: true, hasPendingWrites: false },
+    dataSync: { fromCache: true, hasPendingWrites: false },
+    reportsSync: { fromCache: true, hasPendingWrites: false },
 
     // ---- List filters ----
     rankSearch: "",
@@ -252,13 +291,14 @@
       return;
     }
     const colRef = fb.collection(db, 'pit-reports');
-    fb.onSnapshot(colRef, (snapshot)=>{
+    fb.onSnapshot(colRef, { includeMetadataChanges: true }, (snapshot)=>{
       const rows = [];
       snapshot.forEach(docSnap=>{
         rows.push(Object.assign({ id: docSnap.id }, docSnap.data()));
       });
       state.reports = rows;
       state.loaded = true;
+      state.reportsSync = syncMeta(snapshot);
       render();
     }, (err)=>{
       state.loaded = true;
@@ -317,9 +357,10 @@
   // The index carries every event's settings and which one is active.
   // Switching events re-subscribes the roster doc underneath.
   function subscribeEvents(){
-    subscribeEventIndexStore((index)=>{
+    subscribeEventIndexStore((index, meta)=>{
       state.index = index;
       state.indexLoaded = true;
+      state.indexSync = meta;
       state.event = activeEventOf(index);
       state.teamListError = null;
 
@@ -352,7 +393,7 @@
     });
   }
 
-  function onEventData(d){
+  function onEventData(d, meta){
     state.teamList = {
       teams: d.teams || [],
       doNotPick: d.doNotPick || {},
@@ -360,6 +401,7 @@
       order: d.order || []
     };
     state.teamListError = null;
+    state.dataSync = meta || { fromCache: false, hasPendingWrites: false };
     // Hydrate epaCache from the doc so a page load doesn't refetch.
     // Only fills teams with no local entry, so an in-flight fetch or a
     // fresher result from this session isn't clobbered.
@@ -566,6 +608,7 @@
             <img class="brand-logo" src="Circular Logo.png" alt="FRC 6996 Koalafied logo">
             <div class="brand-mark">PIT SCOUT <span>/ REBUILT</span></div>
             ${brandSubHtml()}
+            ${syncBadgeHtml(mergeSyncMeta(mergeSyncMeta(state.reportsSync, state.indexSync), state.dataSync))}
           </div>
           <div class="tabs">
             <a class="tab-btn" href="index.html">Scouting Data</a>
@@ -655,7 +698,7 @@
   // "Barker Redbacks" (a real team on this roster) is the longest one
   // worth showing in full. Truncated names keep the full name in a
   // title tooltip.
-  const TEAM_NAME_MAX = "Barker Redbacks".length;
+  const TEAM_NAME_MAX = 18;
   function truncateTeamName(name){
     if(!name || name.length <= TEAM_NAME_MAX) return name;
     return name.slice(0, TEAM_NAME_MAX - 1).trimEnd() + '…';

@@ -53,26 +53,49 @@ if (isConfigured) {
   ]);
   fb = firestore;
   const app = initializeApp(firebaseConfig);
-  db = firestore.getFirestore(app);
 
-  // Two things this buys us at a competition with patchy wifi:
-  //  - reads: every onSnapshot below paints from the on-disk cache first,
-  //    so switching pages doesn't sit on a blank "Loading…" waiting for a
-  //    fresh round-trip. Pages still get told (via snapshot.metadata) when
-  //    what they're showing is cache rather than a live connection — see
-  //    syncMeta() — so stale data is never presented as current.
-  //  - writes: a saved pit report is queued to disk and resent
-  //    automatically once the network comes back, surviving the tab being
-  //    closed or the phone losing signal mid-pit. Without this the queue
-  //    is memory-only and an offline save is lost if the tab closes first.
-  // Multi-tab, since it's normal to have index.html and schedule.html open
-  // in separate tabs at once. Fails harmlessly (falls back to in-memory,
-  // no crash) in private browsing or when a browser doesn't support it.
-  try{
-    await firestore.enableMultiTabIndexedDbPersistence(db);
-  }catch(e){
-    console.warn('Offline persistence unavailable — falling back to online-only', e);
-  }
+  // Not getFirestore(app): Firestore's realtime "Listen" connection
+  // normally streams over fetch(), and Safari/WebKit has a long-standing
+  // bug handling that streaming mode — it surfaces as "Fetch API cannot
+  // load .../Listen/channel... due to access control checks", which looks
+  // like a CORS misconfiguration but isn't one (nothing server-side is
+  // wrong, and the same project works fine from Chrome/Firefox). Because
+  // that connection never opens, this device's first snapshot never
+  // arrives, and every page here waits for a first snapshot before it
+  // draws anything — so the result is a page that's permanently stuck
+  // blank on affected browsers, not a transient glitch a reload fixes.
+  // autoDetectLongPolling switches to plain long-polling only on browsers
+  // that need it, so this doesn't cost anything on browsers where
+  // streaming already works fine.
+  db = firestore.initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
+
+  // Tried enabling on-disk (IndexedDB) persistence here — cache-first
+  // reads across page navigations, and a write queue that survives the
+  // tab closing while offline. Pulled it back out: Safari/WebKit (so every
+  // browser on iPhone/iPad, not just Safari itself) has long-standing bugs
+  // where that handshake can hang indefinitely, and this app lives on
+  // phones at competitions — exactly where that bug bites. It was causing
+  // blank pages on navigation there.
+  //
+  // What's still true without it: a write made while offline is queued in
+  // memory and sent automatically once the connection returns, as long as
+  // the tab stays open (see saveScoutForm in index.html) — it just isn't
+  // durable across a tab close/reload while still offline. Reads still get
+  // an honest fromCache/hasPendingWrites via syncMeta() below, so the
+  // Offline/Syncing badge works the same either way.
+
+  // Firestore keeps a long-lived streaming connection open to sync in
+  // real time. This is a page-per-navigation app, so every link click
+  // abandons that connection mid-flight rather than closing it — and on
+  // Safari specifically, an abandoned connection to the same host can wedge
+  // the *next* page's connection to that same host, which is what a stuck,
+  // unrecoverable-by-reload blank page on navigation looks like. `pagehide`
+  // fires right as a navigation begins (reliably on iOS Safari too, unlike
+  // `beforeunload`) — terminating here gives Firestore a chance to close
+  // its connection cleanly before the browser starts the next one.
+  window.addEventListener('pagehide', function(){
+    firestore.terminate(db).catch(()=>{});
+  });
 }
 
 // Turns an onSnapshot's `snapshot.metadata` into the two facts every
