@@ -170,7 +170,7 @@
   let bulkState = { key: null, pending: false };
 
   // Fills both caches and persists the result as a single updateDoc.
-  // Runs on every team-list snapshot and on the refresh buttons.
+  // Runs on every team-list snapshot and on the refresh button.
   async function loadBulkStats(eventCode, country, rosterTeams){
     const ev = (eventCode||"").trim();
     const c = (country||"").trim();
@@ -1157,8 +1157,7 @@
         <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-dnp" ${state.rankHideDNP?'checked':''}><label for="rank-hide-dnp" style="margin:0;">Hide do-not-pick</label></div>
         <div class="checkbox-row" style="width:auto;"><input type="checkbox" id="rank-hide-picked" ${state.rankHidePicked?'checked':''}><label for="rank-hide-picked" style="margin:0;">Hide picked</label></div>
         <div class="spacer"></div>
-        <button class="btn-secondary" id="refresh-epa-btn" title="EPA is cached — click to re-fetch fresh values from Statbotics for every team">Refresh EPA</button>
-        <button class="btn-secondary" id="refresh-qual-rank-btn" title="Quals rank is cached — click to re-fetch fresh values from Statbotics for every team">Refresh Quals Rank</button>
+        <button class="btn-secondary" id="refresh-stats-btn" title="EPA and quals rank are cached — click to re-fetch both from Statbotics">Refresh event data</button>
         <button class="btn-secondary" id="rank-reset-order-btn">Reset order to EPA</button>
         <button class="btn-export" id="rank-export-btn" ${!rows.length?'disabled':''}>Export CSV</button>
       </div>
@@ -1285,18 +1284,14 @@
       if(resetOrderBtn) resetOrderBtn.onclick = resetRankOrder;
       const rankExportBtn = document.getElementById('rank-export-btn');
       if(rankExportBtn) rankExportBtn.onclick = exportPickListCSV;
-      // One request now backs both numbers, so either button refetches
-      // both. Two buttons kept because that's how the toolbar reads.
-      const refreshStats = ()=>{
+      // One request backs EPA and quals rank both, so one button.
+      const refreshStatsBtn = document.getElementById('refresh-stats-btn');
+      if(refreshStatsBtn) refreshStatsBtn.onclick = ()=>{
         epaCache = {}; qualRankCache = {};
         bulkState = { key: null, pending: false };
         loadBulkStats(state.teamList.eventCode, state.teamList.epaCountry, state.teamList.teams);
         render();
       };
-      const refreshEpaBtn = document.getElementById('refresh-epa-btn');
-      if(refreshEpaBtn) refreshEpaBtn.onclick = refreshStats;
-      const refreshQualRankBtn = document.getElementById('refresh-qual-rank-btn');
-      if(refreshQualRankBtn) refreshQualRankBtn.onclick = refreshStats;
 
       document.querySelectorAll('[data-move-up]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveUp, -1); });
       document.querySelectorAll('[data-move-down]').forEach(el=>{ el.onclick = ()=> moveTeam(el.dataset.moveDown, 1); });
