@@ -474,12 +474,17 @@ export async function fetchEventStats(ev, tbaKey){
     out.epaSource = 'statbotics-event';
     rows.forEach(row => {
       const team = String(row.team);
-      // No percentile on team_event — only team_year ranks a team
-      // against the whole field. Callers just omit it.
-      out.epa[team] = { epa: row.epa ? row.epa.total_points : null, percentile: null };
+      out.epa[team] = { epa: row.epa ? row.epa.total_points : null, rank: null };
       const rank = row.record && row.record.qual ? row.record.qual.rank : null;
       if(rank != null) out.qualRank[team] = { rank, eventCode: code };
     });
+    // team_event carries no EPA rank of its own, so it's computed here
+    // from the field this call actually fetched — every team ranked by
+    // EPA against just the teams playing this event.
+    rows
+      .filter(row => row.epa && row.epa.total_points != null)
+      .sort((a, b) => b.epa.total_points - a.epa.total_points)
+      .forEach((row, i) => { out.epa[String(row.team)].rank = i + 1; });
     if(Object.keys(out.qualRank).length) out.rankSource = 'statbotics';
   }else if(country){
     try{
@@ -489,10 +494,9 @@ export async function fetchEventStats(ev, tbaKey){
         const data = await res.json();
         (Array.isArray(data) ? data : []).forEach(row => {
           const team = String(row.team);
-          out.epa[team] = {
-            epa: row.epa ? row.epa.total_points : null,
-            percentile: row.epa && row.epa.ranks ? row.epa.ranks.total.percentile : null
-          };
+          // No per-event EPA rank at this scale — team_years covers the
+          // whole country, not just the teams at this event.
+          out.epa[team] = { epa: row.epa ? row.epa.total_points : null, rank: null };
         });
       }else{
         out.errors.push('statbotics-country');

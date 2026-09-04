@@ -53,7 +53,11 @@
     color:var(--text);
     border-radius:3px;
     padding:9px 10px;
-    font-size:14px;
+    /* 16px, not 14px: iOS Safari auto-zooms the page on focus for any
+       input under 16px, on the assumption it must be too small to read.
+       This is the fix for that, not a design change — shrinking it back
+       down brings the zoom back. */
+    font-size:16px;
     width:100%;
   }
   input:focus, select:focus, textarea:focus{
@@ -338,6 +342,11 @@
   }
   .preview-title{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:30px; line-height:1; }
   .preview-meta{ font-size:13px; color:var(--text-dim); margin-bottom:18px; }
+  /* Muted on purpose — this sits inline in a plain info sentence (date ·
+     event · played), not as its own action row, so it shouldn't jump out
+     in color the way a card's call-to-action link does. */
+  .preview-tba-link{ color:var(--text-dim); text-decoration:underline; text-decoration-color:var(--border-light); text-underline-offset:2px; }
+  .preview-tba-link:hover{ color:var(--text); text-decoration-color:var(--text-dim); }
 
   /* Predicted/final score comparison. The bar is win probability when
      Statbotics has a prediction, and the score split once it's played. */
@@ -406,17 +415,27 @@
   .team-card-stats .divider{ color:var(--text-faint); padding:0 7px; }
 
   /* Scouting answers: a label/value pair per row, wrapping to two
-     columns when the panel is wide enough. */
-  .spec-grid{ display:grid; grid-template-columns:1fr 1fr; gap:7px 14px; }
+     columns when the panel is wide enough. Label and value share one
+     line — most answers here (Swerve, Turreted, Yes, Level 1…) are a
+     word or two, so stacking them was two lines of mostly whitespace.
+     The free-text notes fields (.wide) are the exception: those can run
+     to a full sentence, so they keep the label on its own line above. */
+  .spec-grid{ display:grid; grid-template-columns:1fr 1fr; gap:5px 14px; }
   @media (max-width: 1040px){ .spec-grid{ grid-template-columns:1fr; } }
-  .spec{ font-size:12.5px; line-height:1.35; }
-  .spec .spec-label{
-    display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:0.5px;
-    color:var(--text-faint); font-weight:600;
+  .spec{
+    font-size:12.5px; line-height:1.35;
+    display:flex; align-items:baseline; gap:6px;
   }
-  .spec .spec-value{ color:var(--text); }
+  .spec .spec-label{
+    flex:0 0 auto; font-size:10.5px; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--text-faint); font-weight:600; white-space:nowrap;
+  }
+  .spec .spec-label::after{ content:":"; }
+  .spec .spec-value{ color:var(--text); min-width:0; }
   .spec .spec-value.empty{ color:var(--text-faint); }
-  .spec.wide{ grid-column:1 / -1; }
+  .spec.wide{ grid-column:1 / -1; display:block; }
+  .spec.wide .spec-label{ display:block; margin-bottom:2px; }
+  .spec.wide .spec-label::after{ content:""; }
 
   .team-notes{
     margin-top:10px; padding-top:10px; border-top:1px solid var(--border);

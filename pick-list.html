@@ -161,7 +161,7 @@
   //
   // Both caches sit outside `state` — they're lookups, not report data
   // — keyed by team number: epaCache { "254": {status:"ok", epa:51.7,
-  // percentile:0.997} }, qualRankCache { "254": {status:"ok", rank:3,
+  // rank:1} }, qualRankCache { "254": {status:"ok", rank:3,
   // eventCode:"2026casf"} }. The eventCode on a rank entry means
   // changing the event invalidates stale ranks. Results persist to the
   // active event's doc as `epa` / `qualRank`, so a page load renders
@@ -191,7 +191,7 @@
       // without another fetch.
       Object.keys(stats.epa).forEach(team => {
         const entry = stats.epa[team];
-        epaCache[team] = { status: "ok", epa: entry.epa, percentile: entry.percentile };
+        epaCache[team] = { status: "ok", epa: entry.epa, rank: entry.rank };
       });
       Object.keys(stats.qualRank).forEach(team => {
         const entry = stats.qualRank[team];
@@ -407,7 +407,7 @@
     // fresher result from this session isn't clobbered.
     const epaData = d.epa || {};
     Object.keys(epaData).forEach(team => {
-      if(!epaCache[team]) epaCache[team] = { status: "ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
+      if(!epaCache[team]) epaCache[team] = { status: "ok", epa: epaData[team].epa, rank: epaData[team].rank };
     });
     // Same for quals rank, but only entries fetched for this event's
     // code — a past code's rank would be wrong, and loadBulkStats
@@ -748,14 +748,15 @@
   }
 
   // EPA cell — a pure read of epaCache, which loadBulkStats fills.
-  // Percentile only comes back from the country lookup; the event one
-  // has no field for it, so the cell just omits it there.
+  // Rank only comes back from the per-event lookup — teams ranked by
+  // EPA against just this event's field; the country-wide fallback has
+  // no per-event field to rank against, so the cell just omits it there.
   function epaCellHtml(teamNumber){
     const entry = epaCache[(teamNumber||"").trim()];
     if(bulkState.pending && !entry) return `<span class="epa-loading">…</span>`;
     if(!entry || entry.status === "error" || entry.epa==null) return "—";
-    const pct = entry.percentile!=null ? ` <span class="epa-pct">(${Math.round(entry.percentile*100)}%ile)</span>` : "";
-    return `${entry.epa.toFixed(1)}${pct}`;
+    const rankLabel = entry.rank!=null ? ` <span class="epa-pct">(#${entry.rank})</span>` : "";
+    return `${entry.epa.toFixed(1)}${rankLabel}`;
   }
 
   // Quals-rank cell — a pure read of qualRankCache, filled from

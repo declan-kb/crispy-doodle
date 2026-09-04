@@ -225,7 +225,7 @@
   // to the event doc, so the cache has exactly one writer. Values
   // already cached there are hydrated below, so a preview paints
   // immediately and the live fetch just sharpens it.
-  let epaCache = {};       // { "254": {status, epa, percentile} }
+  let epaCache = {};       // { "254": {status, epa, rank} }
   let qualRankCache = {};  // { "254": {status, rank, eventCode} }
   let statsState = { key: null, pending: false };
 
@@ -237,7 +237,7 @@
     try{
       const stats = await fetchEventStats(ev, resolveTbaKey(state.index));
       Object.keys(stats.epa).forEach(team => {
-        epaCache[team] = { status: "ok", epa: stats.epa[team].epa, percentile: stats.epa[team].percentile };
+        epaCache[team] = { status: "ok", epa: stats.epa[team].epa, rank: stats.epa[team].rank };
       });
       Object.keys(stats.qualRank).forEach(team => {
         qualRankCache[team] = { status: "ok", rank: stats.qualRank[team].rank, eventCode: stats.qualRank[team].eventCode };
@@ -491,7 +491,7 @@
     // local entry, so a fresher result from this session isn't clobbered.
     const epaData = d.epa || {};
     Object.keys(epaData).forEach(team => {
-      if(!epaCache[team]) epaCache[team] = { status:"ok", epa: epaData[team].epa, percentile: epaData[team].percentile };
+      if(!epaCache[team]) epaCache[team] = { status:"ok", epa: epaData[team].epa, rank: epaData[team].rank };
     });
     const rankData = d.qualRank || {};
     Object.keys(rankData).forEach(team => {
@@ -843,7 +843,7 @@
         <div class="preview-title">${esc(m.name)}</div>
         ${side ? `<span class="side-chip ${side}">${esc(state.focusTeam)} · ${side}</span>` : ''}
       </div>
-      <div class="preview-meta">${esc(when)} · ${esc(eventTitle(state.event))} · ${m.played ? 'Played' : 'Not played yet'}</div>
+      <div class="preview-meta">${esc(when)} · ${esc(eventTitle(state.event))} · ${m.played ? 'Played' : 'Not played yet'} · <a class="preview-tba-link" href="https://www.thebluealliance.com/match/${encodeURIComponent(m.key)}" target="_blank" rel="noopener">View on TBA ↗</a></div>
       ${renderPredCard(m)}
       <div class="preview-grid">
         ${renderAlliancePanel('red', m.red, m)}
@@ -930,10 +930,10 @@
     const epa = epaFor(t);
     const rank = qualRankFor(t);
     const epaEntry = epaCache[t];
-    const pct = epaEntry && epaEntry.percentile != null ? ` <span class="epa-pct">(${Math.round(epaEntry.percentile * 100)}%ile)</span>` : '';
+    const rankLabel = epaEntry && epaEntry.rank != null ? ` <span class="epa-pct">(#${epaEntry.rank})</span>` : '';
 
     const stats = [
-      `EPA <b>${epa != null ? epa.toFixed(1) : '—'}</b>${epa != null ? pct : ''}`,
+      `EPA <b>${epa != null ? epa.toFixed(1) : '—'}</b>${epa != null ? rankLabel : ''}`,
       `Quals rank <b>${rank != null ? '#' + rank : '—'}</b>`
     ].join('<span class="divider">·</span>');
 
