@@ -83,19 +83,6 @@ if (isConfigured) {
   // durable across a tab close/reload while still offline. Reads still get
   // an honest fromCache/hasPendingWrites via syncMeta() below, so the
   // Offline/Syncing badge works the same either way.
-
-  // Firestore keeps a long-lived streaming connection open to sync in
-  // real time. This is a page-per-navigation app, so every link click
-  // abandons that connection mid-flight rather than closing it — and on
-  // Safari specifically, an abandoned connection to the same host can wedge
-  // the *next* page's connection to that same host, which is what a stuck,
-  // unrecoverable-by-reload blank page on navigation looks like. `pagehide`
-  // fires right as a navigation begins (reliably on iOS Safari too, unlike
-  // `beforeunload`) — terminating here gives Firestore a chance to close
-  // its connection cleanly before the browser starts the next one.
-  window.addEventListener('pagehide', function(){
-    firestore.terminate(db).catch(()=>{});
-  });
 }
 
 // Turns an onSnapshot's `snapshot.metadata` into the two facts every
